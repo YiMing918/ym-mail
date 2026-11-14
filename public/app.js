@@ -395,7 +395,6 @@ $('selDel').addEventListener('click', async function(){
 
 /* ── 前台事件 ── */
 $('btnAuth').addEventListener('click', function(){ show('authView'); });
-$('btnAdmin').addEventListener('click', function(){ window.location.href = '/admin'; });
 $('btnLogout').addEventListener('click', async function(){
   try { await api('/api/auth/logout', { method:'POST', body:{} }); } catch(e) { /* 忽略 */ }
   curAddr = 'all'; cardAddr = ''; cardTemp = false; filter = 'all'; view = 'inbox'; query=''; $('q').value='';
