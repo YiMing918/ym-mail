@@ -264,12 +264,14 @@ export async function handleApi(request, env, url) {
 
   // ── 首屏打包 ──
   if (path === '/api/bootstrap' && method === 'GET') {
+    const ucRow = await db.prepare('SELECT COUNT(*) AS c FROM users').first().catch(() => null);
+    const ownerExists = (ucRow?.c ?? 1) > 0;
     const gb = guestBlocked();
     if (gb) {
       // 游客模式关闭时也返回公开设置，让前端能正确提示并引导登录/注册
       return json({
         ok: true, mode: 'guest', user: null, guestBlocked: true,
-        settings: { guest_mode: false, reg_mode: cfg.regMode, guest_days: cfg.guestDays, user_cap: cfg.userCap, idle_days: cfg.idleDays },
+        settings: { guest_mode: false, reg_mode: cfg.regMode, guest_days: cfg.guestDays, user_cap: cfg.userCap, idle_days: cfg.idleDays, owner_exists: ownerExists },
         policies: cfg.policies.map(policyForClient),
         addresses: [], quota: {}, mails: [], codes: [], unread: 0, latest: 0, total: 0,
       });
@@ -315,6 +317,7 @@ export async function handleApi(request, env, url) {
         idle_days: cfg.idleDays,
         ref_bonus: cfg.refBonus,
         ref_bonus_n: cfg.refBonusN,
+        owner_exists: ownerExists,
       },
       policies: cfg.policies.map(policyForClient),
       addresses,
@@ -527,6 +530,8 @@ export async function handleApi(request, env, url) {
 
   // ── 注册验证码 ──
   if (path === '/api/auth/send-code' && method === 'POST') {
+    const ucRow0 = await db.prepare('SELECT COUNT(*) AS c FROM users').first().catch(() => null);
+    if ((ucRow0?.c ?? 1) === 0) return err(400, '你是第一个注册的人，不需要验证码，直接点注册就行');
     if (cfg.regMode === 'off') return err(403, '站长已关闭注册');
     if (cfg.regMode === 'invite') return err(400, '当前是邀请码注册，不需要邮箱验证码');
     const body = (await readJson(request)) || {};
@@ -567,8 +572,12 @@ export async function handleApi(request, env, url) {
 
   // ── 注册 ──
   if (path === '/api/auth/register' && method === 'POST') {
-    if (cfg.regMode === 'off') return err(403, '站长已关闭注册，暂时注册不了');
     const body = (await readJson(request)) || {};
+    // 第一个账号 = 站长：任何注册门（关注册/邀请码/邮箱验证码）都不挡它，
+    // 保证谁刚部署完都能先给自己建站长号，不会被自己的门锁在外面。
+    const cntRow = await db.prepare('SELECT COUNT(*) AS c FROM users').first();
+    const isFirst = (cntRow?.c ?? 0) === 0;
+    if (cfg.regMode === 'off' && !isFirst) return err(403, '站长已关闭注册，暂时注册不了');
     const username = String(body.username || '').trim();
     const password = String(body.password || '');
     const email = String(body.email || '').trim().toLowerCase();
@@ -580,54 +589,62 @@ export async function handleApi(request, env, url) {
     const dupE = await db.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
     if (dupE) return err(400, '这个邮箱已经注册过账号了，一个邮箱只能注册一个');
 
-    if (cfg.regMode === 'email') {
-      const code = String(body.code || '').trim();
-      if (!code) return err(400, '填一下邮箱里收到的验证码');
-      const row = await db
-        .prepare('SELECT * FROM reg_codes WHERE email = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 1')
-        .bind(email, Date.now())
-        .first();
-      if (!row || row.attempts >= 5) return err(400, '验证码已失效，重新发一个吧');
-      if ((await sha256Hex(code)) !== row.code_hash) {
-        await db.prepare('UPDATE reg_codes SET attempts = attempts + 1 WHERE id = ?').bind(row.id).run();
-        return err(400, '验证码不对');
-      }
-      await db.prepare('DELETE FROM reg_codes WHERE email = ?').bind(email).run();
-    } else if (cfg.regMode === 'invite') {
-      const codeIn = String(body.invite || '').trim().toUpperCase();
-      if (!codeIn) return err(400, '填一下站长给你的邀请码');
-      const inv = await db.prepare('SELECT * FROM invites WHERE code = ?').bind(codeIn).first();
-      if (!inv || Number(inv.left_uses) === 0) return err(400, '邀请码不对，或已被用完');
-      if (Number(inv.left_uses) > 0) {
-        const upd = await db
-          .prepare('UPDATE invites SET left_uses = left_uses - 1 WHERE code = ? AND left_uses > 0')
-          .bind(codeIn)
-          .run();
-        if (!upd.meta || upd.meta.changes === 0) return err(400, '邀请码刚被用完，找站长再要一个');
+    // 邀请码只留一个输入框：站长发的注册码、或已注册用户的个人邀请码，填哪个都行。
+    // 用站长码 = 直接注册，只享后台政策额度；用个人码 = 邀请人记名，注册成功后邀请人加专属额度。
+    const codeIn = String(body.invite || body.referrer || '').trim().toUpperCase();
+    let referrerId = 0;
+    if (!isFirst) {
+      if (cfg.regMode === 'email') {
+        const code = String(body.code || '').trim();
+        if (!code) return err(400, '填一下邮箱里收到的验证码');
+        const row = await db
+          .prepare('SELECT * FROM reg_codes WHERE email = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 1')
+          .bind(email, Date.now())
+          .first();
+        if (!row || row.attempts >= 5) return err(400, '验证码已失效，重新发一个吧');
+        if ((await sha256Hex(code)) !== row.code_hash) {
+          await db.prepare('UPDATE reg_codes SET attempts = attempts + 1 WHERE id = ?').bind(row.id).run();
+          return err(400, '验证码不对');
+        }
+        await db.prepare('DELETE FROM reg_codes WHERE email = ?').bind(email).run();
+        if (codeIn) {
+          const inviter = await db.prepare('SELECT id FROM users WHERE invite_code = ?').bind(codeIn).first();
+          if (inviter) referrerId = Number(inviter.id);
+        }
+      } else if (cfg.regMode === 'invite') {
+        if (!codeIn) return err(400, '填一下邀请码（站长发的注册码，或已注册朋友的邀请码都行）');
+        const inv = await db.prepare('SELECT * FROM invites WHERE code = ?').bind(codeIn).first();
+        if (inv && Number(inv.left_uses) !== 0) {
+          if (Number(inv.left_uses) > 0) {
+            const upd = await db
+              .prepare('UPDATE invites SET left_uses = left_uses - 1 WHERE code = ? AND left_uses > 0')
+              .bind(codeIn)
+              .run();
+            if (!upd.meta || upd.meta.changes === 0) return err(400, '邀请码刚被用完，找站长再要一个');
+          }
+        } else {
+          const inviter = await db.prepare('SELECT id FROM users WHERE invite_code = ?').bind(codeIn).first();
+          if (!inviter) return err(400, '邀请码不对：填站长发的注册码，或已注册朋友的邀请码');
+          referrerId = Number(inviter.id);
+        }
       }
     }
 
-    const countRow = await db.prepare('SELECT COUNT(*) AS c FROM users').first();
-    const isOwner = (countRow?.c ?? 0) === 0 ? 1 : 0;
+    const isOwner = isFirst ? 1 : 0;
     const pwHash = await hashPassword(password);
     const ins = await db
       .prepare('INSERT INTO users (username, email, pw_hash, is_owner, created_at) VALUES (?, ?, ?, ?, ?)')
       .bind(username, email, pwHash, isOwner, Date.now())
       .run();
     const newId = Number(ins.meta.last_row_id);
-    // 个人邀请码 + 邀请奖励：注册时填了邀请人的码，邀请人 +3 专属额度（一人只奖一次，referrals 唯一约束兜底）
+    // 个人邀请码 + 邀请奖励：注册时填了某位用户的个人码，邀请人加专属额度
+    // （个数站长后台自填；一人只奖一次，referrals 唯一约束兜底）
     await ensureInviteCode(db, { id: newId, invite_code: '' }).catch(() => '');
-    if (cfg.refBonus && cfg.refBonusN > 0) {
-      const ref = String(body.referrer || '').trim().toUpperCase();
-      if (ref) {
-        try {
-          const inviter = await db.prepare('SELECT id FROM users WHERE invite_code = ?').bind(ref).first();
-          if (inviter && Number(inviter.id) !== newId) {
-            await db.prepare('INSERT INTO referrals (inviter_id, invitee_id, created_at) VALUES (?, ?, ?)').bind(Number(inviter.id), newId, Date.now()).run();
-            await db.prepare('UPDATE users SET bonus = bonus + ? WHERE id = ?').bind(cfg.refBonusN, Number(inviter.id)).run();
-          }
-        } catch { /* 邀请奖励出问题不挡注册 */ }
-      }
+    if (cfg.refBonus && cfg.refBonusN > 0 && referrerId && referrerId !== newId) {
+      try {
+        await db.prepare('INSERT INTO referrals (inviter_id, invitee_id, created_at) VALUES (?, ?, ?)').bind(referrerId, newId, Date.now()).run();
+        await db.prepare('UPDATE users SET bonus = bonus + ? WHERE id = ?').bind(cfg.refBonusN, referrerId).run();
+      } catch { /* 邀请奖励出问题不挡注册 */ }
     }
     const { token, ttlSec } = await createDbSession(db, { userId: newId });
     return json({ ok: true, username, isOwner: !!isOwner }, 200, { 'Set-Cookie': sessionCookie(USER_COOKIE, token, ttlSec) });

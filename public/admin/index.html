@@ -47,10 +47,10 @@
 
     <div class="group">
       <div class="gt">全站开关</div>
-      <div class="row"><div>注册方式<div class="sub">邮箱验证 = 填真实邮箱收码才能注册；邀请码 = 有你发的码才能注册</div></div>
+      <div class="row"><div>注册方式<div class="sub">邮箱验证 = 填真实邮箱收码才能注册；邀请码 = 有邀请码才能注册（你发的注册码、或老用户的个人邀请码都行）。注意：刚部署还没人注册时，第一个账号免码直接注册成为站长</div></div>
         <select id="regMode"><option value="email">邮箱验证</option><option value="invite">邀请码</option><option value="off">关闭注册</option></select></div>
       <div id="inviteRow" class="hidden">
-        <button class="polhead" id="invHead" style="padding:13px 16px"><span class="inf"><span style="font-size:14.5px">邀请码</span><span class="sm" style="display:block">发给谁，谁才能注册；生成时能选用几次，点开管理</span></span><span class="val" id="invCount" style="color:var(--ink2);font-size:13px"></span><span class="chev">▾</span></button>
+        <button class="polhead" id="invHead" style="padding:13px 16px"><span class="inf"><span style="font-size:14.5px">邀请码</span><span class="sm" style="display:block">你发的注册码：发给谁，谁才能注册；生成时能选用几次，点开管理（老用户的个人邀请码也能开注册门，用他的码注册还给他加专属额度）</span></span><span class="val" id="invCount" style="color:var(--ink2);font-size:13px"></span><span class="chev">▾</span></button>
         <div id="invDetail" class="hidden" style="border-top:1px dashed var(--line)">
           <div id="invList"></div>
           <div class="addrow">

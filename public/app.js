@@ -413,16 +413,29 @@ function setAuthMode(m){
   if(m==='reg') syncRegFields();
 }
 function syncRegFields(){
-  var inv = S && S.settings.reg_mode==='invite';
-  $('codeRow').style.display = inv ? 'none' : 'flex';
-  $('regNote').style.display = inv ? 'none' : '';
-  $('inviteField').classList.toggle('hidden', !inv);
-  $('refField').classList.toggle('hidden', !(S && S.settings.ref_bonus));
+  var mode = S ? S.settings.reg_mode : 'email';
+  var noOwner = S && S.settings.owner_exists === false;
+  var inv = mode==='invite';
+  // 第一个账号是站长本人：什么码都不用填，表单只留账号/密码/邮箱
+  $('codeRow').style.display = (!noOwner && !inv) ? 'flex' : 'none';
+  $('regNote').style.display = (!noOwner && inv) ? 'none' : '';
+  if(noOwner){
+    $('regNote').textContent = '你是第一个注册的人：注册成功自动成为站长，不需要邀请码、也不用邮箱验证码。';
+  } else if(!inv){
+    $('regNote').textContent = '注册要验真实邮箱：验证码发到你自己的常用邮箱，验过了才能注册——不是谁随手就能注册。';
+  }
+  var showInvite = !noOwner && (inv || (S && S.settings.ref_bonus));
+  $('inviteField').classList.toggle('hidden', !showInvite);
+  if(showInvite){
+    $('inviteNote').textContent = inv
+      ? '填一个邀请码就能注册：站长发的注册码、或已注册朋友的个人邀请码，都行。用朋友的码注册，他得 +' + (S.settings.ref_bonus_n || 3) + ' 专属额度；用站长码就是普通注册，按后台政策给额度。上面的邮箱也要填，备份转发和找回都靠它。'
+      : '朋友邀请你来的？填他的个人邀请码，他能得 +' + (S.settings.ref_bonus_n || 3) + ' 专属额度。不填就是普通注册，按后台政策给额度。';
+  }
   $('authEmail').placeholder = inv ? '你的真实邮箱（备份转发用）' : '你的真实邮箱（收验证码用）';
 }
 $('tabLogin').addEventListener('click', function(){ setAuthMode('login'); });
 $('tabReg').addEventListener('click', function(){
-  if(S && S.settings.reg_mode==='off'){ toast('站长已关闭注册，暂时注册不了'); return; }
+  if(S && S.settings.reg_mode==='off' && S.settings.owner_exists !== false){ toast('站长已关闭注册，暂时注册不了'); return; }
   setAuthMode('reg');
 });
 var codeTimer = null;
@@ -449,17 +462,16 @@ $('authGo').addEventListener('click', async function(){
   if(!password){ toast('填一下密码'); return; }
   try {
     if(authMode==='reg'){
-      if(S.settings.reg_mode==='off'){ toast('站长已关闭注册，暂时注册不了'); return; }
+      if(S.settings.reg_mode==='off' && S.settings.owner_exists !== false){ toast('站长已关闭注册，暂时注册不了'); return; }
       var em = $('authEmail').value.trim();
       if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)){ toast('注册要填真实邮箱'); return; }
       var payload = { username: username, password: password, email: em };
-      var refIn = $('authRef').value.trim();
-      if(refIn) payload.referrer = refIn;
-      if(S.settings.reg_mode==='invite'){
-        var codeIn = $('authInvite').value.trim();
-        if(!codeIn){ toast('填一下站长给你的邀请码'); return; }
-        payload.invite = codeIn;
-      } else {
+      var noOwner = S.settings.owner_exists === false;
+      var codeIn = $('authInvite').value.trim();
+      if(codeIn) payload.invite = codeIn;
+      if(!noOwner && S.settings.reg_mode==='invite'){
+        if(!codeIn){ toast('填一下邀请码（站长发的注册码，或朋友的邀请码都行）'); return; }
+      } else if(!noOwner) {
         if(!$('authCode').value.trim()){ toast('填一下邮箱里收到的验证码'); return; }
         payload.code = $('authCode').value.trim();
       }
