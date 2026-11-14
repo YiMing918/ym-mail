@@ -52,6 +52,14 @@ function lenOpts(cur){
     return '<option value="'+v+'"'+(cur===v?' selected':'')+'>'+(v==='1' ? '不限（1 位起）' : '至少 '+v+' 位')+'</option>';
   }).join('');
 }
+function limCtrl(i, grp, kind, val){
+  var k = grp + kind;
+  var inf = val === 'inf';
+  var num = inf ? '' : (val === 'self' ? '0' : val);
+  var inp = 'background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:7px 9px;font-size:13px;width:74px;margin-left:auto;text-align:center';
+  return '<input type="number" min="0" max="1000" step="1" inputmode="numeric" placeholder="个数" data-pol="'+i+'" data-k="'+k+'" data-lim="1" value="'+num+'"'+(inf?' disabled':'')+' style="'+inp+'">'
+    + '<span style="font-size:12.5px;color:var(--ink2)">不限量</span><button class="switch'+(inf?' on':'')+'" data-pol="'+i+'" data-k="'+k+'inf" style="flex:none"></button>';
+}
 function polRow(i, p, grp){
   var open = grp==='u' ? p.uopen : p.gopen;
   var custom = grp==='u' ? p.ucustom : p.gcustom;
@@ -67,8 +75,8 @@ function polRow(i, p, grp){
   if(!isOpen) return head;
   return head + '<div style="padding-bottom:6px">'
     + '<div style="display:flex;align-items:center;gap:8px;margin-top:2px"><span style="font-size:13.5px">可以用这个域名</span><button class="switch'+(open?' on':'')+'" data-pol="'+i+'" data-k="'+grp+'open" style="margin-left:auto"></button></div>'
-    + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">自定义前缀能建几个</span><select data-pol="'+i+'" data-k="'+grp+'custom" style="'+sel+'">'+limitOpts(custom, customVals)+'</select></div>'
-    + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">随机地址能用几个</span><select data-pol="'+i+'" data-k="'+grp+'random" style="'+sel+'">'+limitOpts(random, randomVals)+'</select></div>'
+    + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">自定义前缀能建几个</span>'+limCtrl(i, grp, 'custom', custom)+'</div>'
+    + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">随机地址能用几个</span>'+limCtrl(i, grp, 'random', random)+'</div>'
     + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">自定义前缀最少几位</span><select data-pol="'+i+'" data-k="'+grp+'minlen" style="'+sel+'">'+lenOpts(minlen || '1')+'</select></div>'
     + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">能删掉重建吗</span><button class="switch'+(del?' on':'')+'" data-pol="'+i+'" data-k="'+grp+'del" style="margin-left:auto"></button></div>'
     + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">删掉后返还额度吗</span><button class="switch'+(refund?' on':'')+'" data-pol="'+i+'" data-k="'+grp+'refund" style="margin-left:auto"></button></div></div>';
@@ -87,7 +95,7 @@ function renderPolicies(){
     return '<div style="border-top:1px solid var(--line)">'
       + '<button class="polhead'+(open?' open':'')+'" data-polhead="'+i+'"><span class="inf"><span class="nm">'+esc(p.dom)+'</span>'+(p.is_main?'<span class="maintag">主域名</span>':'')+'<span class="sm" style="display:block">'+esc(polSummary(p))+'</span></span><span class="chev">▾</span></button>'
       + (open ? '<div class="polbody">' + polRow(i, p, 'u') + polRow(i, p, 'g')
-        + (!p.is_main ? '<div style="margin-top:10px;text-align:right"><button class="del" data-deldom="'+i+'" style="background:var(--panel2);border:1px solid var(--line);color:#ff9c9c;border-radius:8px;padding:8px 14px;font-size:12.5px">删除此域名</button></div>' : '<div style="margin-top:10px;color:var(--ink3);font-size:12px">主域名不能删除</div>')
+        + (!p.is_main ? '<div style="margin-top:10px;text-align:right"><button data-setmain="'+i+'" style="background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:8px 14px;font-size:12.5px;margin-right:8px">设为主域名</button><button class="del" data-deldom="'+i+'" style="background:var(--panel2);border:1px solid var(--line);color:#ff9c9c;border-radius:8px;padding:8px 14px;font-size:12.5px">删除此域名</button></div>' : '<div style="margin-top:10px;color:var(--ink3);font-size:12px">主域名不能删除</div>')
         + '</div>' : '')
       + '</div>';
   }).join('');
@@ -104,6 +112,18 @@ async function savePolicy(i){
   }});
 }
 $('policyList').addEventListener('click', async function(e){
+  var mainBtn = e.target.closest ? e.target.closest('[data-setmain]') : null;
+  if(mainBtn){
+    var mi2 = Number(mainBtn.getAttribute('data-setmain'));
+    var md2 = POLICIES[mi2].dom;
+    try {
+      await api('/api/admin/domains/'+encodeURIComponent(md2)+'/main', { method:'POST' });
+      POLICIES.forEach(function(pp, jj){ pp.is_main = jj===mi2; });
+      renderPolicies();
+      toast('主域名已改为 '+md2);
+    } catch(err2){ toast(err2.message); }
+    return;
+  }
   var delBtn = e.target.closest ? e.target.closest('[data-deldom]') : null;
   if(delBtn){
     if(!armDelete(delBtn, '删除此域名')) return;
@@ -134,6 +154,13 @@ $('policyList').addEventListener('click', async function(e){
   }
   var i = e.target.getAttribute && e.target.getAttribute('data-pol');
   var k = e.target.getAttribute && e.target.getAttribute('data-k');
+  if(k && k.slice(-3)==='inf' && i!==null && i!==undefined){
+    var bk = k.slice(0, -3), bi = Number(i), prev = POLICIES[bi][bk];
+    POLICIES[bi][bk] = prev==='inf' ? '1' : 'inf';
+    try { await savePolicy(bi); renderPolicies(); toast(POLICIES[bi].dom + ' 已更新'); }
+    catch(err2){ POLICIES[bi][bk] = prev; renderPolicies(); toast(err2.message); }
+    return;
+  }
   if(i===null||i===undefined||['uopen','gopen','udel','gdel','urefund','grefund'].indexOf(k)===-1) return;
   POLICIES[Number(i)][k] = !POLICIES[Number(i)][k];
   try { await savePolicy(Number(i)); renderPolicies(); toast(POLICIES[Number(i)].dom + ' 已更新'); }
@@ -143,6 +170,11 @@ $('policyList').addEventListener('change', async function(e){
   var i = e.target.getAttribute && e.target.getAttribute('data-pol');
   var k = e.target.getAttribute && e.target.getAttribute('data-k');
   if(['ucustom','urandom','gcustom','grandom','uminlen','gminlen'].indexOf(k)===-1) return;
+  if(e.target.getAttribute('data-lim')){
+    var raw = String(e.target.value).trim();
+    if(!/^\d+$/.test(raw) || Number(raw) > 1000){ toast('个数填 0 到 1000 的整数，或者打开旁边的「不限量」'); loadAdmin(); return; }
+    e.target.value = String(Number(raw));
+  }
   POLICIES[Number(i)][k] = e.target.value;
   var names = { ucustom:'注册用户·自定义前缀', urandom:'注册用户·随机地址', gcustom:'游客·自定义前缀', grandom:'游客·随机地址', uminlen:'注册用户·前缀最少位数', gminlen:'游客·前缀最少位数' };
   try {

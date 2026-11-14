@@ -172,6 +172,14 @@ export async function handleAdminApi(request, env, url) {
     invalidateConfig();
     return json({ ok: true });
   }
+  const domMainMatch = path.match(/^\/api\/admin\/domains\/(.+)\/main$/);
+  if (domMainMatch && method === 'POST') {
+    const domain = decodeURIComponent(domMainMatch[1]).toLowerCase();
+    if (!cfg.byDomain[domain]) return err(404, '域名不存在');
+    await db.prepare('UPDATE policies SET is_main = CASE WHEN domain = ? THEN 1 ELSE 0 END').bind(domain).run();
+    invalidateConfig();
+    return json({ ok: true, domain });
+  }
   const domDelMatch = path.match(/^\/api\/admin\/domains\/(.+)$/);
   if (domDelMatch && method === 'DELETE') {
     const domain = decodeURIComponent(domDelMatch[1]).toLowerCase();
