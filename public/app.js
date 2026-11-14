@@ -43,6 +43,19 @@ var curAddr = 'all', filter = 'all', view = 'inbox', query = '';
 var selectMode = false, selected = {};
 var cardAddr = '', cardTemp = false;
 var knownLatest = 0;
+var PIN_MAIL = null, PIN_CODE = null;   // 「全部」范围时置顶的「我的地址最新一封 / 最新验证码」
+var scopePicked = false;               // 用户是否手动选过浏览范围（选过就记住，没选过默认看自己的地址）
+try {
+  cardAddr = localStorage.getItem('ym_card') || '';
+  var savedScope = localStorage.getItem('ym_scope');
+  if (savedScope) { curAddr = savedScope; scopePicked = true; }
+} catch (e) { /* 隐私模式等存不了就用默认 */ }
+function persistView(){
+  try {
+    if (cardAddr && !cardTemp) localStorage.setItem('ym_card', cardAddr);
+    localStorage.setItem('ym_scope', curAddr);
+  } catch (e) {}
+}
 
 function mode(){ return S ? S.mode : 'guest'; }
 function policies(){ return S ? S.policies : []; }
@@ -113,13 +126,17 @@ function canDeleteAddr(a){
 }
 function renderAddrList(){
   var idle = S.settings.idle_days;
-  $('addrList').innerHTML = myAddrs().map(function(a){
+  var q = ($('addrSearch') ? $('addrSearch').value.trim().toLowerCase() : '');
+  var rows = myAddrs().filter(function(a){ return !q || a.address.toLowerCase().indexOf(q) > -1; });
+  $('addrSheetList').innerHTML = rows.length ? rows.map(function(a){
     var right = a.main ? '<span class="val">不可删</span>'
       : (canDeleteAddr(a) ? '<button class="del" data-deladdr="'+esc(a.address)+'">删除</button>' : '<span class="val">不可删（站长设置）</span>');
     var isRnd = a.kind==='random';
     var sub = a.total+' 封邮件 · @'+esc(domOf(a.address)) + (isRnd && idle>0 ? ' · 无新信 '+idle+' 天自动删' : '');
-    return '<div class="row"><div>'+esc(a.address)+(a.main?'<span class="maintag">主邮箱</span>':'')+(isRnd?'<span class="maintag" style="background:rgba(76,195,138,.12);border-color:rgba(76,195,138,.4);color:#7ddba8">随机</span>':'')+'<div class="sub">'+sub+'</div></div>' + right + '</div>';
-  }).join('');
+    return '<div class="row" data-gotoaddr="'+esc(a.address)+'"><div>'+esc(a.address)+(a.main?'<span class="maintag">主邮箱</span>':'')+(isRnd?'<span class="maintag" style="background:rgba(76,195,138,.12);border-color:rgba(76,195,138,.4);color:#7ddba8">随机</span>':'')+(curAddr===a.address?'<span class="maintag" style="background:rgba(255,146,43,.12);border-color:rgba(255,146,43,.4);color:#ffb25e">当前</span>':'')+'<div class="sub">'+sub+'</div></div>' + right + '</div>';
+  }).join('') : '<div class="empty">没有匹配的邮箱</div>';
+  var lbl = $('addrCountLbl');
+  if(lbl) lbl.textContent = myAddrs().length + ' 个 ›';
   var doms = mode()==='guest' ? guestDoms() : policies().map(function(p){ return p.dom; });
   var prevDom = $('newDomSel').value;
   $('newDomSel').innerHTML = doms.map(function(d){ return '<option value="'+esc(d)+'">@'+esc(d)+'</option>'; }).join('');
@@ -134,13 +151,32 @@ function updateLenHint(){
     ? '提示：'+pol.dom+' 的自定义前缀要求至少 '+pol.uminlen+' 位（站长设置，短前缀是稀缺资源）'
     : '提示：'+pol.dom+' 的自定义前缀长度不限';
 }
+function mailRow(m){
+  var sel = !!selected[m.id];
+  return '<button class="mail'+(m.read?'':' unread')+(selectMode && sel ? ' sel':'')+'" '+(selectMode ? 'data-sel="'+m.id+'"' : 'data-open="'+m.id+'"')+'>'
+    + (selectMode ? '<span class="ckbox'+(sel?' on':'')+'">'+(sel?'✓':'')+'</span>' : (m.read ? '<span style="width:8px;flex:none"></span>' : '<span class="dot"></span>'))
+    + '<span class="avatar" style="background:'+colorOf(m.from)+'">'+esc(initialOf(m.from))+'</span>'
+    + '<span class="body"><span class="r1"><span class="from">'+esc(m.from)+'</span><span class="time">'+clock(m.t)+'</span></span>'
+    + '<span class="subj">'+esc(m.subj || '（无主题）')+'</span>'
+    + '<span class="snip">'+esc(m.snip)+'</span>'
+    + '<span class="meta"><span class="toaddr">'+esc(m.to)+'</span>'
+    + (m.otp ? '<span class="otpchip">🔑 '+esc(m.otp)+'</span>' : '')
+    + (m.att ? '<span class="toaddr">📎 '+m.att+'</span>' : '')
+    + '<span class="star'+(m.star?' on':'')+'" style="margin-left:auto">'+(m.star?'★':'☆')+'</span></span></span></button>';
+}
 function renderList(){
   var unreadAll = myAddrs().reduce(function(s,a){ return s+a.unread; }, 0);
   $('unreadBdg').textContent = unreadAll; $('unreadBdg').style.display = unreadAll ? '' : 'none';
   $('statVal').textContent = '共 ' + myAddrs().reduce(function(s,a){ return s+a.total; }, 0) + ' 封 · 未读 ' + unreadAll;
   $('loadMore').classList.toggle('hidden', !(MAIL_TOTAL > MAILS.length));
   if(selectMode) renderSelBar();
-  if(!MAILS.length){
+  var pinHtml = '';
+  if(PIN_MAIL && curAddr==='all' && view==='inbox' && filter==='all' && !query && !selectMode){
+    if(!MAILS.length || MAILS[0].id !== PIN_MAIL.id){
+      pinHtml = '<div class="pinlabel">📌 我的地址 '+esc(cardAddr)+' · 最新一封（钉在最上面，别人再多也挤不下去）</div>' + mailRow(PIN_MAIL);
+    }
+  }
+  if(!MAILS.length && !pinHtml){
     $('mailList').innerHTML = query
       ? '<div class="empty"><span class="big">🔍</span>没搜到「'+esc(query)+'」相关的邮件<br>换个词试试，或清空搜索</div>'
       : (filter!=='all' || view==='sent'
@@ -148,27 +184,26 @@ function renderList(){
         : '<div class="empty"><span class="big">📭</span>这里还没有邮件<br>把上面的地址填到要注册的网站，验证码马上就到</div>');
     return;
   }
-  $('mailList').innerHTML = MAILS.map(function(m){
-    var sel = !!selected[m.id];
-    return '<button class="mail'+(m.read?'':' unread')+(selectMode && sel ? ' sel':'')+'" '+(selectMode ? 'data-sel="'+m.id+'"' : 'data-open="'+m.id+'"')+'>'
-      + (selectMode ? '<span class="ckbox'+(sel?' on':'')+'">'+(sel?'✓':'')+'</span>' : (m.read ? '<span style="width:8px;flex:none"></span>' : '<span class="dot"></span>'))
-      + '<span class="avatar" style="background:'+colorOf(m.from)+'">'+esc(initialOf(m.from))+'</span>'
-      + '<span class="body"><span class="r1"><span class="from">'+esc(m.from)+'</span><span class="time">'+clock(m.t)+'</span></span>'
-      + '<span class="subj">'+esc(m.subj || '（无主题）')+'</span>'
-      + '<span class="snip">'+esc(m.snip)+'</span>'
-      + '<span class="meta"><span class="toaddr">'+esc(m.to)+'</span>'
-      + (m.otp ? '<span class="otpchip">🔑 '+esc(m.otp)+'</span>' : '')
-      + (m.att ? '<span class="toaddr">📎 '+m.att+'</span>' : '')
-      + '<span class="star'+(m.star?' on':'')+'" style="margin-left:auto">'+(m.star?'★':'☆')+'</span></span></span></button>';
-  }).join('');
+  $('mailList').innerHTML = pinHtml + MAILS.map(mailRow).join('');
+}
+function codeCard(m){
+  return '<div class="codecard"><div class="src"><span class="avatar" style="width:30px;height:30px;border-radius:9px;font-size:13px;background:'+colorOf(m.from)+'">'+esc(initialOf(m.from))+'</span><b style="color:var(--ink)">'+esc(m.from)+'</b><span>· '+esc(m.to)+'</span></div>'
+    + '<div class="code">'+esc(m.otp)+'</div>'
+    + '<div class="foot"><span>'+ago(m.t)+'收到</span><button class="copy" data-copy="'+esc(m.otp)+'">复制</button></div></div>';
 }
 function renderCodes(){
   var codes = CODES.filter(function(m){ return curAddr==='all' || m.to===curAddr; });
-  $('codeList').innerHTML = codes.length ? codes.map(function(m){
-    return '<div class="codecard"><div class="src"><span class="avatar" style="width:30px;height:30px;border-radius:9px;font-size:13px;background:'+colorOf(m.from)+'">'+esc(initialOf(m.from))+'</span><b style="color:var(--ink)">'+esc(m.from)+'</b><span>· '+esc(m.to)+'</span></div>'
-      + '<div class="code">'+esc(m.otp)+'</div>'
-      + '<div class="foot"><span>'+ago(m.t)+'收到</span><button class="copy" data-copy="'+esc(m.otp)+'">复制</button></div></div>';
-  }).join('') : '<div class="empty"><span class="big">🔑</span>这个邮箱下还没有验证码<br>收到带验证码的邮件会自动出现在这里</div>';
+  var pinHtml = '';
+  if(PIN_CODE && curAddr==='all'){
+    if(!codes.length || codes[0].id !== PIN_CODE.id){
+      pinHtml = '<div class="pinlabel">📌 我的地址 '+esc(cardAddr)+' · 最新验证码（钉在最上面）</div>' + codeCard(PIN_CODE);
+    }
+  }
+  if(!codes.length && !pinHtml){
+    $('codeList').innerHTML = '<div class="empty"><span class="big">🔑</span>这个邮箱下还没有验证码<br>收到带验证码的邮件会自动出现在这里</div>';
+    return;
+  }
+  $('codeList').innerHTML = pinHtml + codes.map(codeCard).join('');
 }
 function renderQuota(){
   function lim(v){ return v==='self' ? '0' : (v==='inf' ? '∞' : v); }
@@ -224,34 +259,47 @@ async function boot(){
     $('modeBar').className = 'modebar';
     $('modeBar').innerHTML = '🛠 <b>站点刚部署</b>：站长还没有在后台添加邮箱域名，暂时收不了信。';
   }
-  if(curAddr!=='all' && !addrRow(curAddr)) curAddr = 'all';
-  if(!cardAddr || (cardAddr && !cardTemp && !addrRow(cardAddr))) cardAddr = myAddrs()[0] ? myAddrs()[0].address : '';
   knownLatest = data.latest || 0;
-  if(data.mode==='guest' && data.settings.guest_mode && !data.guestBlocked){
-    MAILS = data.mails || []; MAIL_TOTAL = data.total || 0; CODES = data.codes || [];
-    if(!myAddrs().length && guestDoms().length){
-      // 游客第一次来：自动给一个临时地址（与预览「打开就有地址」的体验一致）
+  MAILS = data.mails || []; MAIL_TOTAL = data.total || 0; CODES = data.codes || [];
+  // ── 当前地址：记住上次用的（localStorage）；没有可用的就定一个 ──
+  // 注册用户取主地址；游客没有自己的地址就现领一个随机地址。保证每个人
+  // 打开页面，手里先有一个「自己的地址」，而不是对着满屏别人的信找自己的。
+  if(!cardTemp && (!cardAddr || !addrRow(cardAddr))){
+    if(data.mode==='user'){
+      var mainRow = myAddrs().find(function(a){ return a.main; });
+      cardAddr = mainRow ? mainRow.address : (myAddrs()[0] ? myAddrs()[0].address : '');
+    } else if(data.settings.guest_mode && !data.guestBlocked && guestDoms().length){
+      cardAddr = '';
       try {
-        var r = await api('/api/guest/address', { method:'POST', body:{} });
-        cardAddr = r.address; curAddr = r.address;
-        await boot();
-        return;
-      } catch(e) { /* 额度满等情况就保持空列表 */ }
+        var r0 = await api('/api/guest/address', { method:'POST', body:{} });
+        cardAddr = r0.address;
+        var d2 = await api('/api/bootstrap');
+        S = d2; MAILS = d2.mails || []; MAIL_TOTAL = d2.total || 0; CODES = d2.codes || []; knownLatest = d2.latest || knownLatest;
+      } catch(e) { /* 游客随机额度已满：保持空卡，范围退回全部 */ }
+    } else {
+      cardAddr = '';
     }
-  } else {
-    MAILS = data.mails || []; MAIL_TOTAL = data.total || 0; CODES = data.codes || [];
   }
+  // ── 浏览范围：手动选过的按记住的；没选过默认看自己的当前地址 ──
+  // 这样列表第一个永远是自己邮箱最新的一封，不会被别人的信挤下去。
+  if(curAddr!=='all' && !addrRow(curAddr)) curAddr = 'all';
+  if(!scopePicked && cardAddr) curAddr = cardAddr;
+  persistView();
   renderAll();
   refreshList(true); // 按当前 scope/filter 重新对齐列表
+  refreshPin();
 }
 async function softRefresh(){
   var data = await api('/api/bootstrap');
   S = data;
   knownLatest = data.latest || knownLatest;
   if(curAddr!=='all' && !addrRow(curAddr)) curAddr = 'all';
+  if(!scopePicked && cardAddr && curAddr==='all' && addrRow(cardAddr)) curAddr = cardAddr;
   CODES = data.codes || [];
+  persistView();
   renderAll();
   refreshList(true);
+  refreshPin();
 }
 async function refreshList(reset){
   if(!S) return;
@@ -269,6 +317,21 @@ async function refreshCodes(){
     var data = await api('/api/codes?scope='+encodeURIComponent(curAddr));
     CODES = data.codes; renderCodes();
   } catch(e) { /* 轮询路径静默 */ }
+}
+/* 置顶数据：范围是「全部」时，单独把「我的地址」最新一封信和最新验证码
+   拉回来钉在最上面——全站再多人同时用，也挤不到自己那封下面去。 */
+async function refreshPin(){
+  PIN_MAIL = null; PIN_CODE = null;
+  if(!S || curAddr!=='all' || !cardAddr || cardTemp){ renderList(); renderCodes(); return; }
+  try {
+    var d = await api('/api/mails?scope='+encodeURIComponent(cardAddr)+'&limit=1&offset=0');
+    PIN_MAIL = (d.mails && d.mails[0]) || null;
+  } catch(e) { /* 静默 */ }
+  try {
+    var c = await api('/api/codes?scope='+encodeURIComponent(cardAddr));
+    PIN_CODE = (c.codes && c.codes[0]) || null;
+  } catch(e) { /* 静默 */ }
+  renderList(); renderCodes();
 }
 /* 30 秒轻量轮询：只问有没有新信，有才刷新 */
 setInterval(async function(){
@@ -495,9 +558,11 @@ $('sheetList').addEventListener('click', function(e){
   if(!el) return;
   exitSel();
   curAddr = el.getAttribute('data-pick');
+  scopePicked = true;
   cardAddr = curAddr==='all' ? (myAddrs()[0] ? myAddrs()[0].address : '') : curAddr; cardTemp = false;
+  persistView();
   $('sheetWrap').classList.remove('show');
-  renderAll(); refreshList(true); refreshCodes();
+  renderAll(); refreshList(true); refreshCodes(); refreshPin();
 });
 $('sheetAdd').addEventListener('click', async function(){
   $('sheetWrap').classList.remove('show');
@@ -607,17 +672,36 @@ $('addAddr').addEventListener('click', async function(){
     toast('已添加邮箱：'+r.address);
   } catch(e){ toast(e.message); }
 });
-$('addrList').addEventListener('click', async function(e){
+$('addrOpenBtn').addEventListener('click', function(){
+  renderAddrList();
+  $('addrSheetWrap').classList.add('show');
+});
+$('addrSheetWrap').addEventListener('click', function(e){ if(e.target===$('addrSheetWrap')) $('addrSheetWrap').classList.remove('show'); });
+$('addrSearch').addEventListener('input', function(){ renderAddrList(); });
+$('addrSheetList').addEventListener('click', async function(e){
   var a = e.target.getAttribute && e.target.getAttribute('data-deladdr');
-  if(!a) return;
-  if(!armDelete(e.target, '删除')) return;
-  try {
-    var r = await api('/api/addresses/'+encodeURIComponent(a), { method:'DELETE' });
-    if(curAddr===a) curAddr = 'all';
-    if(cardAddr===a) cardAddr = '';
-    await softRefresh();
-    toast(r.refund ? '已删除，额度已返还' : '已删除（按站长设置，额度不返还）');
-  } catch(e){ toast(e.message); }
+  if(a){
+    if(!armDelete(e.target, '删除')) return;
+    try {
+      var r = await api('/api/addresses/'+encodeURIComponent(a), { method:'DELETE' });
+      if(curAddr===a) curAddr = 'all';
+      if(cardAddr===a) cardAddr = '';
+      await softRefresh();
+      toast(r.refund ? '已删除，额度已返还' : '已删除（按站长设置，额度不返还）');
+    } catch(err){ toast(err.message); }
+    return;
+  }
+  var row = e.target.closest ? e.target.closest('[data-gotoaddr]') : null;
+  if(row){
+    exitSel();
+    curAddr = row.getAttribute('data-gotoaddr');
+    scopePicked = true;
+    cardAddr = curAddr; cardTemp = false;
+    persistView();
+    $('addrSheetWrap').classList.remove('show');
+    renderAll(); refreshList(true); refreshCodes(); refreshPin();
+    document.querySelector('#tabbar button[data-page="pageInbox"]').click();
+  }
 });
 $('composeForm').addEventListener('submit', async function(e){
   e.preventDefault();

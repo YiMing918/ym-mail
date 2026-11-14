@@ -91,7 +91,7 @@
         </div>
         <div class="group">
           <div class="gt">我的邮箱</div>
-          <div id="addrList"></div>
+          <button class="rowbtn" id="addrOpenBtn"><span>📬 全部邮箱（点开切换 / 删除）</span><span class="val" id="addrCountLbl">0 个 ›</span></button>
           <div class="addrow">
             <input id="newPrefix" type="text" placeholder="前缀（自己想，或点随机）">
             <button class="rnd" id="rndPrefix">随机</button>
@@ -160,6 +160,15 @@
     <div class="st">选择邮箱</div>
     <div id="sheetList"></div>
     <button class="boxrow add" id="sheetAdd">＋ 新建邮箱</button>
+  </div>
+</div>
+
+<div id="addrSheetWrap">
+  <div id="addrSheet">
+    <div class="grab"></div>
+    <div class="st">我的邮箱 · 点一下就切换过去</div>
+    <input id="addrSearch" type="search" placeholder="搜索邮箱地址…">
+    <div id="addrSheetList"></div>
   </div>
 </div>
 
