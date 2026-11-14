@@ -200,21 +200,28 @@ export async function handleAdminApi(request, env, url) {
     return json({ ok: true });
   }
 
-  // ── 邀请码：生成 / 作废 ──
+  // ── 邀请码：批量生成 / 作废 ──
+  // 每次生成的码都是密码学随机、互不相同（撞码自动重掷），支持一次生成一批、每人发一个。
   if (path === '/api/admin/invites' && method === 'POST') {
     const body = (await readJson(request)) || {};
     const uses = Number(body.uses);
     if (!(uses === -1 || (Number.isInteger(uses) && uses >= 1 && uses <= 1000))) return err(400, '次数填 1 到 1000，或选不限次');
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const code = randomCodePrefix();
-      try {
-        await db.prepare('INSERT INTO invites (code, left_uses, created_at) VALUES (?, ?, ?)').bind(code, uses, Date.now()).run();
-        return json({ ok: true, code, left: uses });
-      } catch {
-        /* 撞码重试 */
+    const count = body.count === undefined ? 1 : Number(body.count);
+    if (!Number.isInteger(count) || count < 1 || count > 50) return err(400, '一次生成 1 到 50 个');
+    const codes = [];
+    for (let n = 0; n < count; n++) {
+      let done = false;
+      for (let attempt = 0; attempt < 8 && !done; attempt++) {
+        const code = randomCodePrefix();
+        try {
+          await db.prepare('INSERT INTO invites (code, left_uses, created_at) VALUES (?, ?, ?)').bind(code, uses, Date.now()).run();
+          codes.push(code);
+          done = true;
+        } catch { /* 撞码重掷 */ }
       }
+      if (!done) return err(500, '生成邀请码失败，请重试');
     }
-    return err(500, '生成失败，再点一次');
+    return json({ ok: true, codes, code: codes[0], left: uses });
   }
   const invDelMatch = path.match(/^\/api\/admin\/invites\/(.+)$/);
   if (invDelMatch && method === 'DELETE') {

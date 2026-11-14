@@ -266,14 +266,22 @@ $('genInvite').addEventListener('click', async function(){
     if($('invInf').classList.contains('on')) uses = -1;
     else {
       var v = String($('invUses').value).trim();
-      if(!/^\d+$/.test(v) || Number(v) < 1 || Number(v) > 1000){ toast('邀请码次数填 1 到 1000，或打开「不限次」'); return; }
+      if(!/^\d+$/.test(v) || Number(v) < 1 || Number(v) > 1000){ toast('每个码的次数填 1 到 1000，或打开「不限次」'); return; }
       uses = Number(v);
     }
-    var r = await api('/api/admin/invites', { method:'POST', body:{ uses: uses } });
-    INVITES.unshift({ code: r.code, left: r.left });
+    var nv = String($('invNum').value).trim();
+    if(!/^\d+$/.test(nv) || Number(nv) < 1 || Number(nv) > 50){ toast('一次生成 1 到 50 个'); return; }
+    var r = await api('/api/admin/invites', { method:'POST', body:{ uses: uses, count: Number(nv) } });
+    (r.codes || [r.code]).forEach(function(c){ INVITES.unshift({ code: c, left: uses }); });
     renderInvites();
-    toast('已生成 '+r.code+'（'+(r.left===-1 ? '不限次' : '可用 '+r.left+' 次')+'），点复制发给朋友');
+    toast('已生成 ' + (r.codes ? r.codes.length : 1) + ' 个随机邀请码（每个' + (uses===-1 ? '不限次' : '可用 '+uses+' 次') + '），互不相同，点复制发给朋友');
   } catch(e){ toast(e.message); }
+});
+$('copyInvites').addEventListener('click', function(){
+  var avail = INVITES.filter(function(x){ return x.left!==0; }).map(function(x){ return x.code; });
+  if(!avail.length){ toast('没有可用的邀请码，先生成'); return; }
+  copy(avail.join('\n'));
+  toast('已复制 ' + avail.length + ' 个可用邀请码');
 });
 $('invList').addEventListener('click', async function(e){
   var ci = e.target.getAttribute && e.target.getAttribute('data-invcopy');
