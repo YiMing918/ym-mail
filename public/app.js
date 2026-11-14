@@ -182,6 +182,7 @@ function renderQuota(){
       parts.push('<b>'+esc(p.dom)+'</b> 自定义 '+poolUsed(p.dom,'c')+'/'+lim(p.ucustom)+' · 随机 '+poolUsed(p.dom,'r')+'/'+lim(p.urandom));
     }
   });
+  if(mode()!=='guest' && S.user && Number(S.user.bonus) > 0) parts.push('专属额度 <b>+'+Number(S.user.bonus)+'</b>');
   $('quotaStrip').innerHTML = (mode()==='guest' ? '游客额度　' : '我的额度　') + (parts.length ? parts.join('　|　') : '暂无可用域名');
 }
 function renderSettings(){
@@ -190,6 +191,13 @@ function renderSettings(){
   $('swForward').classList.toggle('on', !!S.user.forward_backup);
   $('tgChatId').value = S.user.tg_chat_id || '';
   $('fwdEmail').textContent = S.user.email;
+  var refOn = !S.settings || S.settings.ref_bonus !== false;
+  $('inviteGroup').classList.toggle('hidden', !refOn);
+  if(refOn){
+    $('myInviteCode').textContent = S.user.invite_code || '—';
+    $('inviteStats').textContent = '已邀请 ' + Number(S.user.invited || 0) + ' 人 · 专属额度 ' + Number(S.user.bonus || 0) + ' 个';
+  }
+  document.querySelectorAll('.refBonusN').forEach(function(el){ el.textContent = (S.settings && S.settings.ref_bonus_n != null) ? S.settings.ref_bonus_n : 3; });
   renderMyRet();
 }
 function renderMyRet(){
@@ -204,6 +212,7 @@ function renderMyRet(){
   $('myRetNote').textContent = '超过天数自动删除，星标不删 · 站长上限：' + (cap===0 ? '不限' : cap+' 天');
 }
 function renderAll(){
+  document.querySelectorAll('.refBonusN').forEach(function(el){ el.textContent = (S.settings && S.settings.ref_bonus_n != null) ? S.settings.ref_bonus_n : 3; });
   renderModeBar(); renderQuota(); renderSwitcher(); renderList(); renderCodes(); renderSettings();
 }
 
@@ -409,6 +418,7 @@ function syncRegFields(){
   $('codeRow').style.display = inv ? 'none' : 'flex';
   $('regNote').style.display = inv ? 'none' : '';
   $('inviteField').classList.toggle('hidden', !inv);
+  $('refField').classList.toggle('hidden', !(S && S.settings.ref_bonus));
   $('authEmail').placeholder = inv ? '你的真实邮箱（备份转发用）' : '你的真实邮箱（收验证码用）';
 }
 $('tabLogin').addEventListener('click', function(){ setAuthMode('login'); });
@@ -444,6 +454,8 @@ $('authGo').addEventListener('click', async function(){
       var em = $('authEmail').value.trim();
       if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)){ toast('注册要填真实邮箱'); return; }
       var payload = { username: username, password: password, email: em };
+      var refIn = $('authRef').value.trim();
+      if(refIn) payload.referrer = refIn;
       if(S.settings.reg_mode==='invite'){
         var codeIn = $('authInvite').value.trim();
         if(!codeIn){ toast('填一下站长给你的邀请码'); return; }
@@ -607,6 +619,9 @@ $('composeForm').addEventListener('submit', async function(e){
     softRefresh();
   } catch(err2){ toast(err2.message); }
   btn.disabled = false; btn.textContent = '发送（经 Resend 免费通道）';
+});
+$('copyInvite').addEventListener('click', function(){
+  if(S && S.user && S.user.invite_code) copy(S.user.invite_code);
 });
 $('swTg').addEventListener('click', async function(){
   var on = !this.classList.contains('on');

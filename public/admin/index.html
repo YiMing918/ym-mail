@@ -54,44 +54,24 @@
         <div id="invDetail" class="hidden" style="border-top:1px dashed var(--line)">
           <div id="invList"></div>
           <div class="addrow">
-            <select id="invUses" style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 8px;font-size:13px;color:var(--ink)"><option value="1">用 1 次</option><option value="5">用 5 次</option><option value="10">用 10 次</option><option value="-1">不限次</option></select>
+            <input id="invUses" type="number" min="1" max="1000" step="1" inputmode="numeric" value="1" style="width:84px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 8px;font-size:13px;color:var(--ink);text-align:center">
+            <span style="font-size:12.5px;color:var(--ink2)">不限次</span><button class="switch" id="invInf" aria-label="不限次"></button>
             <button class="add" id="genInvite">＋ 生成邀请码</button>
           </div>
         </div>
       </div>
       <div class="row"><div>游客模式<div class="sub">关掉后必须登录才能用</div></div><button class="switch" id="swGuestMode" aria-label="游客模式"></button></div>
+      <div class="row"><div>邀请奖励<div class="sub">用户邀请一人注册成功，就给邀请人加专属额度；关掉就不给</div></div><button class="switch" id="swRefBonus" aria-label="邀请奖励"></button></div>
+      <div class="row"><div>邀请一人给几个<div class="sub">专属额度个数，自己填。专属额度能在域名上限之外多建地址（自定义、随机都行）</div></div><input id="refBonusN" type="number" min="0" max="1000" step="1" inputmode="numeric" style="margin-left:auto;width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:center"></div>
       <div class="row"><div>Telegram 推送（你的）<div class="sub">你的新邮件直推（需在服务器配 TG_BOT_TOKEN 与 TG_CHAT_ID）</div></div><button class="switch" id="swAdminTg" aria-label="TG推送"></button></div>
       <div class="row"><div>系统发件地址<div class="sub">注册验证码从这个地址发；留空 = noreply@第一个域名</div></div><input id="mailFrom" type="text" placeholder="noreply@你的域名" style="margin-left:auto;width:170px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:right"></div>
     </div>
 
     <div class="group">
       <div class="gt">清理</div>
-      <div class="row" style="border-top:none"><div>游客邮件保留<div class="sub">游客的邮件超过天数自动删</div></div></div>
-      <div class="retchips" id="retGuest">
-        <button class="retchip" data-d="1">1 天</button>
-        <button class="retchip" data-d="3">3 天</button>
-        <button class="retchip" data-d="7">7 天</button>
-        <button class="retchip" data-d="15">15 天</button>
-        <button class="retchip" data-d="30">30 天</button>
-      </div>
-      <div class="row"><div>注册用户的邮件 · 最长保存<div class="sub">保存的是「邮件」：注册用户自己选邮件保存天数时，不能超过这个上限。到期邮件自动删，星标不删</div></div></div>
-      <div class="retchips" id="retUser">
-        <button class="retchip" data-d="15">15 天</button>
-        <button class="retchip" data-d="30">30 天</button>
-        <button class="retchip" data-d="90">90 天</button>
-        <button class="retchip" data-d="180">180 天</button>
-        <button class="retchip" data-d="365">1 年</button>
-        <button class="retchip" data-d="0">不限</button>
-      </div>
-      <div class="row"><div>随机地址闲置清理<div class="sub">随机地址多久没收到新信，就连地址带信一起删掉；自定义前缀的地址不删。系统清理掉的会返还额度</div></div></div>
-      <div class="retchips" id="retIdle">
-        <button class="retchip" data-d="1">1 天</button>
-        <button class="retchip" data-d="3">3 天</button>
-        <button class="retchip" data-d="7">7 天</button>
-        <button class="retchip" data-d="15">15 天</button>
-        <button class="retchip" data-d="30">30 天</button>
-        <button class="retchip" data-d="0">不清理</button>
-      </div>
+      <div class="row" style="border-top:none"><div>游客邮件保留<div class="sub">游客的邮件超过这个天数自动删；填 0 = 不自动删</div></div><input id="inGuestDays" type="number" min="0" max="3650" step="1" inputmode="numeric" style="margin-left:auto;width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:center"><span style="margin-left:8px;color:var(--ink2);font-size:13px">天</span></div>
+      <div class="row"><div>注册用户的邮件 · 最长保存<div class="sub">注册用户自己选邮件保存天数时不能超过这个上限；填 0 = 不限。到期自动删，星标不删</div></div><input id="inUserCap" type="number" min="0" max="3650" step="1" inputmode="numeric" style="margin-left:auto;width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:center"><span style="margin-left:8px;color:var(--ink2);font-size:13px">天</span></div>
+      <div class="row"><div>随机地址闲置清理<div class="sub">随机地址多少天没收到新信就连地址带信一起删（自定义地址不删，系统清理返还额度）；填 0 = 不清理</div></div><input id="inIdleDays" type="number" min="0" max="3650" step="1" inputmode="numeric" style="margin-left:auto;width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:center"><span style="margin-left:8px;color:var(--ink2);font-size:13px">天</span></div>
     </div>
 
     <div class="group">

@@ -20,7 +20,17 @@ CREATE TABLE IF NOT EXISTS users (
   tg_chat_id     TEXT NOT NULL DEFAULT '',      -- 自己的 Telegram chat id（与站长 bot 配合用）
   forward_backup INTEGER NOT NULL DEFAULT 0,    -- 备份转发开关：新信抄送一份到 email
   is_owner       INTEGER NOT NULL DEFAULT 0,    -- 站长账号：不受个数/位数政策限制；首个注册账号自动置 1
+  bonus          INTEGER NOT NULL DEFAULT 0,    -- 专属额度（邀请奖励：邀请一人 +3，在域名政策上限之外叠加，建地址超额时抵用）
+  invite_code    TEXT NOT NULL DEFAULT '',      -- 个人邀请码（别人注册时填它，奖励发给本人）
   created_at     INTEGER NOT NULL
+);
+
+-- ── 邀请奖励记录（一人被邀请只记一次，防重复发奖） ──
+CREATE TABLE IF NOT EXISTS referrals (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  inviter_id INTEGER NOT NULL,                  -- 邀请人 users.id
+  invitee_id INTEGER NOT NULL UNIQUE,           -- 被邀请的新用户 users.id
+  created_at INTEGER NOT NULL
 );
 
 -- ── 邮箱地址 ──────────────────────────────────────────
@@ -31,6 +41,7 @@ CREATE TABLE IF NOT EXISTS addresses (
   kind         TEXT NOT NULL DEFAULT 'custom',  -- custom = 自定义前缀 / random = 随机生成
   owner_id     INTEGER,                         -- NULL = 未认领（公开临时邮箱）；数字 = 认领者 users.id
   protected    INTEGER NOT NULL DEFAULT 0,      -- 1 = 不可删除（站长给自己的主地址用）
+  bonus_used   INTEGER NOT NULL DEFAULT 0,      -- 1 = 这个地址是用专属额度抵的（删除/系统清理时按政策退回专属额度）
   created_at   INTEGER NOT NULL,
   last_mail_at INTEGER NOT NULL DEFAULT 0       -- 最近一封信的时间，随机地址闲置清理按它算
 );
@@ -106,6 +117,8 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('user_cap', '180'),
   ('idle_days', '7'),
   ('admin_tg_push', '1'),
+  ('ref_bonus', '1'),
+  ('ref_bonus_n', '3'),
   ('mail_from', '');
 
 -- ── 域名政策（一行 = 一个域名，两组：u = 注册用户 / g = 游客） ──

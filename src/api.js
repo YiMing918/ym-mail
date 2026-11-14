@@ -170,6 +170,26 @@ async function listAddresses(env, viewer) {
   }));
 }
 
+// ---------- 邀请奖励：专属额度（邀请一人给几个由站长在后台自填 ref_bonus_n，在域名政策上限之外叠加） ----------
+function randomInviteCode() {
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  const buf = new Uint32Array(5);
+  crypto.getRandomValues(buf);
+  return 'YM-' + [...buf].map((n) => chars[n % chars.length]).join('');
+}
+async function ensureInviteCode(db, user) {
+  if (user.invite_code) return user.invite_code;
+  for (let i = 0; i < 5; i++) {
+    const code = randomInviteCode();
+    const dup = await db.prepare('SELECT id FROM users WHERE invite_code = ?').bind(code).first();
+    if (dup) continue;
+    await db.prepare('UPDATE users SET invite_code = ? WHERE id = ?').bind(code, user.id).run();
+    user.invite_code = code;
+    return code;
+  }
+  return '';
+}
+
 // ---------- 创建 / 认领地址（登录用户） ----------
 async function createOrClaim(env, cfg, user, addrRaw, kind) {
   const addr = String(addrRaw || '').trim().toLowerCase();
@@ -185,6 +205,7 @@ async function createOrClaim(env, cfg, user, addrRaw, kind) {
   const existing = await env.DB.prepare('SELECT * FROM addresses WHERE address = ?').bind(addr).first();
   if (existing && existing.owner_id === user.id) return { error: [400, '这个邮箱已经有了'] };
   if (existing && existing.owner_id !== null) return { error: [403, '这个地址已被别人认领了'] };
+  let useBonus = 0;
   if (!user.is_owner) {
     // 个数上限（按目标 kind 的池算，含 tombstone）
     const quota = await quotaMap(env, { type: 'user', user });
@@ -192,25 +213,38 @@ async function createOrClaim(env, cfg, user, addrRaw, kind) {
     const limit = kind === 'custom' ? pol.u_custom : pol.u_random;
     if (limit === 0) return { error: [403, `站长把这个域名的${kind === 'custom' ? '自定义前缀' : '随机地址'}设为 0 个，建不了`] };
     if (limit > 0 && used >= limit) {
-      return { error: [403, `你在 ${domain} 的${kind === 'custom' ? '自定义前缀' : '随机地址'}已达上限 ${limit} 个（后台政策）`] };
+      // 政策额度用满：有专属额度（邀请奖励）就抵 1 个继续建；0 个上限不适用（那是站长关死）
+      const brow = await env.DB.prepare('SELECT bonus FROM users WHERE id = ?').bind(user.id).first();
+      if (brow && Number(brow.bonus) > 0) useBonus = 1;
+      else return { error: [403, `你在 ${domain} 的${kind === 'custom' ? '自定义前缀' : '随机地址'}已达上限 ${limit} 个（后台政策）；邀请好友注册成功可得专属额度，超出上限也能建`] };
     }
     if (kind === 'custom' && prefix.length < (pol.u_minlen || 1)) {
       return { error: [400, `前缀太短：${domain} 要求至少 ${pol.u_minlen} 位（站长设置）`] };
     }
   }
   const now = Date.now();
-  if (existing) {
-    // 认领公开地址：连同历史邮件一起锁定给认领者（一次性迁移归属快照）
-    await env.DB.batch([
-      env.DB.prepare('UPDATE addresses SET owner_id = ?, kind = ? WHERE address = ?').bind(user.id, kind, addr),
-      env.DB.prepare('UPDATE mails SET owner_id = ? WHERE to_addr = ? AND owner_id IS NULL').bind(user.id, addr),
-    ]);
-  } else {
-    await env.DB.prepare(
-      'INSERT INTO addresses (address, domain, prefix, kind, owner_id, protected, created_at, last_mail_at) VALUES (?, ?, ?, ?, ?, 0, ?, 0)'
-    )
-      .bind(addr, domain, prefix, kind, user.id, now)
-      .run();
+  if (useBonus) {
+    const dec = await env.DB.prepare('UPDATE users SET bonus = bonus - 1 WHERE id = ? AND bonus > 0').bind(user.id).run();
+    if (!dec.meta || dec.meta.changes === 0) useBonus = 0;
+    if (!useBonus) return { error: [403, '专属额度刚刚用完了'] };
+  }
+  try {
+    if (existing) {
+      // 认领公开地址：连同历史邮件一起锁定给认领者（一次性迁移归属快照）
+      await env.DB.batch([
+        env.DB.prepare('UPDATE addresses SET owner_id = ?, kind = ?, bonus_used = ? WHERE address = ?').bind(user.id, kind, useBonus, addr),
+        env.DB.prepare('UPDATE mails SET owner_id = ? WHERE to_addr = ? AND owner_id IS NULL').bind(user.id, addr),
+      ]);
+    } else {
+      await env.DB.prepare(
+        'INSERT INTO addresses (address, domain, prefix, kind, owner_id, protected, bonus_used, created_at, last_mail_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0)'
+      )
+        .bind(addr, domain, prefix, kind, user.id, useBonus, now)
+        .run();
+    }
+  } catch (e) {
+    if (useBonus) await env.DB.prepare('UPDATE users SET bonus = bonus + 1 WHERE id = ?').bind(user.id).run().catch(() => {});
+    throw e;
   }
   return { address: addr };
 }
@@ -247,6 +281,14 @@ export async function handleApi(request, env, url) {
       listCodes(env, viewer),
       visibleUnread(env, viewer),
     ]);
+    let invitedCount = 0;
+    if (viewer.user) {
+      await ensureInviteCode(db, viewer.user).catch(() => '');
+      const rc = await db.prepare('SELECT COUNT(*) AS c FROM referrals WHERE inviter_id = ?').bind(viewer.user.id).first();
+      invitedCount = Number(rc?.c || 0);
+      const brow = await db.prepare('SELECT bonus FROM users WHERE id = ?').bind(viewer.user.id).first();
+      if (brow) viewer.user.bonus = Number(brow.bonus);
+    }
     return json({
       ok: true,
       mode: viewer.type,
@@ -259,6 +301,9 @@ export async function handleApi(request, env, url) {
             tg_chat_id: viewer.user.tg_chat_id || '',
             forward_backup: !!viewer.user.forward_backup,
             is_owner: !!viewer.user.is_owner,
+            bonus: Number(viewer.user.bonus || 0),
+            invite_code: viewer.user.invite_code || '',
+            invited: invitedCount,
           }
         : null,
       guestBlocked: false,
@@ -268,6 +313,8 @@ export async function handleApi(request, env, url) {
         guest_days: cfg.guestDays,
         user_cap: cfg.userCap,
         idle_days: cfg.idleDays,
+        ref_bonus: cfg.refBonus,
+        ref_bonus_n: cfg.refBonusN,
       },
       policies: cfg.policies.map(policyForClient),
       addresses,
@@ -459,7 +506,12 @@ export async function handleApi(request, env, url) {
     const pol = cfg.byDomain[row.domain];
     if (pol && !pol.u_del) return err(403, '站长设置这个域名不能删掉重建');
     const stmts = [db.prepare('DELETE FROM addresses WHERE address = ?').bind(addr)];
-    if (pol && !pol.u_refund) {
+    if (row.bonus_used) {
+      // 专属额度建的地址不占政策池（不写 tombstone）；返还开着就把专属额度退回本人
+      if (pol && pol.u_refund) {
+        stmts.push(db.prepare('UPDATE users SET bonus = bonus + 1 WHERE id = ?').bind(viewer.user.id));
+      }
+    } else if (pol && !pol.u_refund) {
       stmts.push(
         db
           .prepare(
@@ -562,7 +614,22 @@ export async function handleApi(request, env, url) {
       .prepare('INSERT INTO users (username, email, pw_hash, is_owner, created_at) VALUES (?, ?, ?, ?, ?)')
       .bind(username, email, pwHash, isOwner, Date.now())
       .run();
-    const { token, ttlSec } = await createDbSession(db, { userId: Number(ins.meta.last_row_id) });
+    const newId = Number(ins.meta.last_row_id);
+    // 个人邀请码 + 邀请奖励：注册时填了邀请人的码，邀请人 +3 专属额度（一人只奖一次，referrals 唯一约束兜底）
+    await ensureInviteCode(db, { id: newId, invite_code: '' }).catch(() => '');
+    if (cfg.refBonus && cfg.refBonusN > 0) {
+      const ref = String(body.referrer || '').trim().toUpperCase();
+      if (ref) {
+        try {
+          const inviter = await db.prepare('SELECT id FROM users WHERE invite_code = ?').bind(ref).first();
+          if (inviter && Number(inviter.id) !== newId) {
+            await db.prepare('INSERT INTO referrals (inviter_id, invitee_id, created_at) VALUES (?, ?, ?)').bind(Number(inviter.id), newId, Date.now()).run();
+            await db.prepare('UPDATE users SET bonus = bonus + ? WHERE id = ?').bind(cfg.refBonusN, Number(inviter.id)).run();
+          }
+        } catch { /* 邀请奖励出问题不挡注册 */ }
+      }
+    }
+    const { token, ttlSec } = await createDbSession(db, { userId: newId });
     return json({ ok: true, username, isOwner: !!isOwner }, 200, { 'Set-Cookie': sessionCookie(USER_COOKIE, token, ttlSec) });
   }
 

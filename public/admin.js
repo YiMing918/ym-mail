@@ -77,7 +77,7 @@ function polRow(i, p, grp){
     + '<div style="display:flex;align-items:center;gap:8px;margin-top:2px"><span style="font-size:13.5px">可以用这个域名</span><button class="switch'+(open?' on':'')+'" data-pol="'+i+'" data-k="'+grp+'open" style="margin-left:auto"></button></div>'
     + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">自定义前缀能建几个</span>'+limCtrl(i, grp, 'custom', custom)+'</div>'
     + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">随机地址能用几个</span>'+limCtrl(i, grp, 'random', random)+'</div>'
-    + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">自定义前缀最少几位</span><select data-pol="'+i+'" data-k="'+grp+'minlen" style="'+sel+'">'+lenOpts(minlen || '1')+'</select></div>'
+    + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">自定义前缀最少几位</span><input type="number" min="1" max="32" step="1" inputmode="numeric" data-pol="'+i+'" data-k="'+grp+'minlen" data-limlen="1" value="'+(minlen || '1')+'" style="'+sel+'width:74px;text-align:center"></div>'
     + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">能删掉重建吗</span><button class="switch'+(del?' on':'')+'" data-pol="'+i+'" data-k="'+grp+'del" style="margin-left:auto"></button></div>'
     + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">删掉后返还额度吗</span><button class="switch'+(refund?' on':'')+'" data-pol="'+i+'" data-k="'+grp+'refund" style="margin-left:auto"></button></div></div>';
 }
@@ -175,6 +175,11 @@ $('policyList').addEventListener('change', async function(e){
     if(!/^\d+$/.test(raw) || Number(raw) > 1000){ toast('个数填 0 到 1000 的整数，或者打开旁边的「不限量」'); loadAdmin(); return; }
     e.target.value = String(Number(raw));
   }
+  if(e.target.getAttribute('data-limlen')){
+    var rawL = String(e.target.value).trim();
+    if(!/^\d+$/.test(rawL) || Number(rawL) < 1 || Number(rawL) > 32){ toast('前缀最少位数填 1 到 32 的整数'); loadAdmin(); return; }
+    e.target.value = String(Number(rawL));
+  }
   POLICIES[Number(i)][k] = e.target.value;
   var names = { ucustom:'注册用户·自定义前缀', urandom:'注册用户·随机地址', gcustom:'游客·自定义前缀', grandom:'游客·随机地址', uminlen:'注册用户·前缀最少位数', gminlen:'游客·前缀最少位数' };
   try {
@@ -215,21 +220,26 @@ $('swAdminTg').addEventListener('click', function(){
   this.classList.toggle('on', on);
   saveSettings({ admin_tg_push: on }, on ? 'TG 推送已开启' : 'TG 推送已关闭');
 });
+$('swRefBonus').addEventListener('click', function(){
+  var on = !this.classList.contains('on');
+  this.classList.toggle('on', on);
+  saveSettings({ ref_bonus: on }, on ? '邀请奖励已开启：邀请一人给专属额度' : '邀请奖励已关闭：邀请也不给额度了');
+});
+$('refBonusN').addEventListener('change', function(){
+  var v = String(this.value).trim();
+  if(!/^\d+$/.test(v) || Number(v) > 1000){ toast('邀请奖励个数填 0 到 1000 的整数'); loadAdmin(); return; }
+  saveSettings({ ref_bonus_n: Number(v) }, '邀请一人给 ' + v + ' 个专属额度');
+});
 $('mailFrom').addEventListener('change', function(){
   saveSettings({ mail_from: this.value.trim() }, '系统发件地址已保存');
 });
-function bindRetChips(id, key, label){
-  $(id).addEventListener('click', function(e){
-    var d = e.target.getAttribute && e.target.getAttribute('data-d'); if(d===null||d===undefined) return;
-    var bs = $(id).querySelectorAll('.retchip');
-    for(var i=0;i<bs.length;i++) bs[i].classList.toggle('on', bs[i].getAttribute('data-d')===d);
-    var patch = {}; patch[key] = Number(d);
-    saveSettings(patch, label + (d==='0' ? '不限/不清理' : d+' 天'));
+function bindDayInput(id, key, label, zeroText){
+  $(id).addEventListener('change', function(){
+    var v = String(this.value).trim();
+    if(!/^\d+$/.test(v) || Number(v) > 3650){ toast('天数填 0 到 3650 的整数'); loadAdmin(); return; }
+    var patch = {}; patch[key] = Number(v);
+    saveSettings(patch, label + (Number(v)===0 ? zeroText : v + ' 天'));
   });
-}
-function markRetChips(id, val){
-  var bs = $(id).querySelectorAll('.retchip');
-  for(var i=0;i<bs.length;i++) bs[i].classList.toggle('on', Number(bs[i].getAttribute('data-d'))===Number(val));
 }
 
 /* ── 邀请码 ── */
@@ -246,9 +256,20 @@ function renderInvites(){
   }).join('') : '<div class="row"><div style="color:var(--ink3)">暂无邀请码，生成一个发给朋友</div></div>';
 }
 $('invHead').addEventListener('click', function(){ $('invDetail').classList.toggle('hidden'); this.classList.toggle('open'); });
+$('invInf').addEventListener('click', function(){
+  this.classList.toggle('on');
+  $('invUses').disabled = this.classList.contains('on');
+});
 $('genInvite').addEventListener('click', async function(){
   try {
-    var r = await api('/api/admin/invites', { method:'POST', body:{ uses: Number($('invUses').value) } });
+    var uses;
+    if($('invInf').classList.contains('on')) uses = -1;
+    else {
+      var v = String($('invUses').value).trim();
+      if(!/^\d+$/.test(v) || Number(v) < 1 || Number(v) > 1000){ toast('邀请码次数填 1 到 1000，或打开「不限次」'); return; }
+      uses = Number(v);
+    }
+    var r = await api('/api/admin/invites', { method:'POST', body:{ uses: uses } });
     INVITES.unshift({ code: r.code, left: r.left });
     renderInvites();
     toast('已生成 '+r.code+'（'+(r.left===-1 ? '不限次' : '可用 '+r.left+' 次')+'），点复制发给朋友');
@@ -327,10 +348,12 @@ async function loadAdmin(){
   $('inviteRow').classList.toggle('hidden', SETTINGS.reg_mode!=='invite');
   $('swGuestMode').classList.toggle('on', !!SETTINGS.guest_mode);
   $('swAdminTg').classList.toggle('on', !!SETTINGS.admin_tg_push);
+  $('swRefBonus').classList.toggle('on', SETTINGS.ref_bonus !== false);
+  $('refBonusN').value = SETTINGS.ref_bonus_n == null ? 3 : SETTINGS.ref_bonus_n;
   $('mailFrom').value = SETTINGS.mail_from || '';
-  markRetChips('retGuest', SETTINGS.guest_days);
-  markRetChips('retUser', SETTINGS.user_cap);
-  markRetChips('retIdle', SETTINGS.idle_days);
+  $('inGuestDays').value = SETTINGS.guest_days;
+  $('inUserCap').value = SETTINGS.user_cap;
+  $('inIdleDays').value = SETTINGS.idle_days;
   renderPolicies(); renderInvites(); renderGuard();
 }
 function showAdmin(){
@@ -352,9 +375,9 @@ $('admOut').addEventListener('click', async function(){
 });
 $('admFront').addEventListener('click', function(){ window.location.href = '/'; });
 $('admBack').addEventListener('click', function(){ window.location.href = '/'; });
-bindRetChips('retGuest', 'guest_days', '游客邮件保留：');
-bindRetChips('retUser', 'user_cap', '注册用户最长保留：');
-bindRetChips('retIdle', 'idle_days', '随机地址闲置清理：');
+bindDayInput('inGuestDays', 'guest_days', '游客邮件保留：', '不自动删');
+bindDayInput('inUserCap', 'user_cap', '注册用户最长保留：', '不限');
+bindDayInput('inIdleDays', 'idle_days', '随机地址闲置清理：', '不清理');
 
 /* 已有管理员会话时直接进后台 */
 loadAdmin().then(showAdmin).catch(function(){ /* 未登录，停在登录页 */ });

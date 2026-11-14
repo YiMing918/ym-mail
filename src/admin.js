@@ -76,6 +76,8 @@ export async function handleAdminApi(request, env, url) {
         user_cap: cfg.userCap,
         idle_days: cfg.idleDays,
         admin_tg_push: cfg.settings.admin_tg_push !== '0',
+        ref_bonus: cfg.refBonus,
+        ref_bonus_n: cfg.refBonusN,
         mail_from: cfg.settings.mail_from || '',
       },
       policies: cfg.policies.map(policyForClient),
@@ -89,6 +91,12 @@ export async function handleAdminApi(request, env, url) {
   if (path === '/api/admin/settings' && method === 'POST') {
     const body = (await readJson(request)) || {};
     if (typeof body.guest_mode === 'boolean') await setSetting(env, 'guest_mode', body.guest_mode ? '1' : '0');
+    if (typeof body.ref_bonus === 'boolean') await setSetting(env, 'ref_bonus', body.ref_bonus ? '1' : '0');
+    if (typeof body.ref_bonus_n === 'number') {
+      const v = Math.floor(body.ref_bonus_n);
+      if (v < 0 || v > 1000) return err(400, '邀请奖励个数填 0 到 1000');
+      await setSetting(env, 'ref_bonus_n', String(v));
+    }
     if (typeof body.admin_tg_push === 'boolean') await setSetting(env, 'admin_tg_push', body.admin_tg_push ? '1' : '0');
     if (typeof body.reg_mode === 'string' && ['email', 'invite', 'off'].includes(body.reg_mode)) {
       await setSetting(env, 'reg_mode', body.reg_mode);
@@ -196,7 +204,7 @@ export async function handleAdminApi(request, env, url) {
   if (path === '/api/admin/invites' && method === 'POST') {
     const body = (await readJson(request)) || {};
     const uses = Number(body.uses);
-    if (![1, 5, 10, -1].includes(uses)) return err(400, '次数只能选 1 / 5 / 10 / 不限次');
+    if (!(uses === -1 || (Number.isInteger(uses) && uses >= 1 && uses <= 1000))) return err(400, '次数填 1 到 1000，或选不限次');
     for (let attempt = 0; attempt < 5; attempt++) {
       const code = randomCodePrefix();
       try {

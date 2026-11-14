@@ -227,6 +227,13 @@ export default {
     // 3) 随机地址闲置清理：连地址带信一起删，额度自然返还（不写 tombstone）；自定义地址不删
     if (cfg.idleDays > 0) {
       const cutoff = now - cfg.idleDays * dayMs;
+      // 用专属额度建的随机地址被系统清理：专属额度退回主人（系统清理返还，与用户自删的政策开关无关）
+      stmts.push(
+        db.prepare(
+          `UPDATE users SET bonus = bonus + (SELECT COUNT(*) FROM addresses a WHERE a.owner_id = users.id AND a.kind = 'random' AND a.last_mail_at > 0 AND a.last_mail_at < ? AND a.bonus_used = 1)
+           WHERE id IN (SELECT owner_id FROM addresses WHERE kind = 'random' AND last_mail_at > 0 AND last_mail_at < ? AND bonus_used = 1 AND owner_id IS NOT NULL)`
+        ).bind(cutoff, cutoff)
+      );
       stmts.push(
         db.prepare('DELETE FROM attachments WHERE mail_id IN (SELECT id FROM mails WHERE to_addr IN (SELECT address FROM addresses WHERE kind = ? AND last_mail_at > 0 AND last_mail_at < ?))').bind('random', cutoff)
       );

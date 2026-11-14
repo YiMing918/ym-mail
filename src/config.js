@@ -32,6 +32,8 @@ export async function loadConfig(env, force = false) {
     blacklist: (blRows.results || []).map((r) => r.pattern),
     banned: new Set((banRows.results || []).map((r) => r.address)),
     guestMode: settings.guest_mode !== '0',
+    refBonus: settings.ref_bonus !== '0', // 邀请奖励总开关（站长可关）
+    refBonusN: (() => { const n = Number(settings.ref_bonus_n ?? 3); return Number.isFinite(n) ? Math.min(1000, Math.max(0, Math.floor(n))) : 3; })(), // 邀请一人给几个专属额度（站长自填）
     regMode: settings.reg_mode || 'email',
     guestDays: Number(settings.guest_days ?? 1) || 0,
     userCap: Number(settings.user_cap ?? 180) || 0, // 0 = 不限
