@@ -156,7 +156,7 @@ async function listAddresses(env, viewer) {
        (SELECT COUNT(*) FROM mails mm WHERE mm.to_addr = a.address AND ${visCount} AND mm.folder = 'inbox' AND mm.is_read = 0) AS unread
      FROM addresses a
      WHERE ${isUser ? 'a.owner_id = ?' : 'a.owner_id IS NULL'}
-     ORDER BY a.created_at ASC LIMIT 200`
+     ORDER BY a.protected DESC, a.created_at DESC LIMIT 200`
   )
     .bind(...(isUser ? [viewer.user.id, viewer.user.id, viewer.user.id] : []))
     .all();
@@ -475,6 +475,36 @@ export async function handleApi(request, env, url) {
   if (path === '/api/guest/address' && method === 'POST') {
     if (viewer.type === 'user') return err(400, '已登录账号请用「存为邮箱」');
     if (!cfg.guestMode) return err(403, '游客模式已关闭，请先登录');
+    const gbody = (await readJson(request)) || {};
+    const wantPrefix = String(gbody.prefix || '').trim().toLowerCase();
+    if (wantPrefix) {
+      // 游客自定义前缀：按政策 g_custom（个数）/ g_minlen（最少位数）执行，与随机共用游客池计数
+      const domain = String(gbody.domain || '').trim().toLowerCase();
+      const pol = cfg.byDomain[domain];
+      if (!pol || !pol.g_open) return err(400, '这个域名没有开放给游客');
+      if (!PREFIX_RE.test(wantPrefix)) return err(400, '前缀只能用小写字母、数字、点和横线（1–31 位）');
+      if (pol.g_custom === 0) return err(403, '站长把这个域名的游客自定义前缀设为 0 个，建不了');
+      if (wantPrefix.length < (pol.g_minlen || 1)) return err(400, `前缀太短：${domain} 要求至少 ${pol.g_minlen} 位（站长设置）`);
+      const addr = `${wantPrefix}@${domain}`;
+      if (cfg.banned.has(addr)) return err(403, '这个地址已被站长封禁，不能用');
+      const existing = await db.prepare('SELECT owner_id FROM addresses WHERE address = ?').bind(addr).first();
+      if (existing) {
+        if (existing.owner_id !== null) return err(403, '这个地址已被注册用户认领了，换个前缀吧');
+        return json({ ok: true, address: addr, existed: true }); // 池里已有同名：直接用，不重复占额
+      }
+      const quota0 = await quotaMap(env, viewer);
+      const usedC = (quota0[domain] || { c: 0, r: 0 }).c;
+      if (pol.g_custom > 0 && usedC >= pol.g_custom) return err(403, `游客在 ${domain} 的自定义前缀已达上限 ${pol.g_custom} 个`);
+      try {
+        await db
+          .prepare('INSERT INTO addresses (address, domain, prefix, kind, owner_id, protected, created_at, last_mail_at) VALUES (?, ?, ?, ?, NULL, 0, ?, 0)')
+          .bind(addr, domain, wantPrefix, 'custom', Date.now())
+          .run();
+      } catch {
+        return err(400, '这个地址刚刚被人抢先建了，换个前缀吧');
+      }
+      return json({ ok: true, address: addr });
+    }
     const quota = await quotaMap(env, viewer);
     for (const pol of cfg.policies) {
       if (!pol.g_open) continue;
@@ -508,7 +538,12 @@ export async function handleApi(request, env, url) {
     if (row.protected) return err(400, '主地址不可删');
     const pol = cfg.byDomain[row.domain];
     if (pol && !pol.u_del) return err(403, '站长设置这个域名不能删掉重建');
-    const stmts = [db.prepare('DELETE FROM addresses WHERE address = ?').bind(addr)];
+    // 删邮箱连同它的邮件和附件一起真删（同一批落库）：不让「站上删了、库里还留着」白占 D1 空间
+    const stmts = [
+      db.prepare('DELETE FROM attachments WHERE mail_id IN (SELECT id FROM mails WHERE to_addr = ? AND owner_id = ?)').bind(addr, viewer.user.id),
+      db.prepare('DELETE FROM mails WHERE to_addr = ? AND owner_id = ?').bind(addr, viewer.user.id),
+      db.prepare('DELETE FROM addresses WHERE address = ?').bind(addr),
+    ];
     if (row.bonus_used) {
       // 专属额度建的地址不占政策池（不写 tombstone）；返还开着就把专属额度退回本人
       if (pol && pol.u_refund) {

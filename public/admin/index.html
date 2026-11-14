@@ -76,7 +76,7 @@
       <div class="gt">清理</div>
       <div class="row" style="border-top:none"><div>游客邮件保留<div class="sub">游客的邮件超过这个天数自动删；填 0 = 不自动删</div></div><input id="inGuestDays" type="number" min="0" max="3650" step="1" inputmode="numeric" style="margin-left:auto;width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:center"><span style="margin-left:8px;color:var(--ink2);font-size:13px">天</span></div>
       <div class="row"><div>注册用户的邮件 · 最长保存<div class="sub">注册用户自己选邮件保存天数时不能超过这个上限；填 0 = 不限。到期自动删，星标不删</div></div><input id="inUserCap" type="number" min="0" max="3650" step="1" inputmode="numeric" style="margin-left:auto;width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:center"><span style="margin-left:8px;color:var(--ink2);font-size:13px">天</span></div>
-      <div class="row"><div>随机地址闲置清理<div class="sub">随机地址多少天没收到新信就连地址带信一起删（自定义地址不删，系统清理返还额度）；填 0 = 不清理</div></div><input id="inIdleDays" type="number" min="0" max="3650" step="1" inputmode="numeric" style="margin-left:auto;width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:center"><span style="margin-left:8px;color:var(--ink2);font-size:13px">天</span></div>
+      <div class="row"><div>随机地址闲置清理<div class="sub">随机地址多少天没收到新信就连地址带信一起删（从没收到过信的按建立时间算；自定义地址不删，系统清理返还额度）；填 0 = 不清理</div></div><input id="inIdleDays" type="number" min="0" max="3650" step="1" inputmode="numeric" style="margin-left:auto;width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:center"><span style="margin-left:8px;color:var(--ink2);font-size:13px">天</span></div>
     </div>
 
     <div class="group">
@@ -95,6 +95,15 @@
         <div class="addrow">
           <input id="banInput" type="text" placeholder="要封禁的完整地址">
           <button class="add" id="banAdd">＋ 封禁</button>
+        </div>
+      </div>
+      <button class="polhead" id="cleanHead" style="padding:13px 16px;border-top:1px solid var(--line)"><span class="inf"><span style="font-size:14.5px">清理没用的邮箱</span><span class="sm" style="display:block">游客领了却从没收到过信的临时邮箱（建好超过 30 分钟的）：检测一条 SQL、删除一批搞定，不费额度。收到过信的、被人认领的一律不碰</span></span><span class="val" id="cleanCount" style="color:var(--ink2);font-size:13px"></span><span class="chev">▾</span></button>
+      <div id="cleanDetail" class="hidden" style="border-top:1px dashed var(--line)">
+        <div id="cleanInfo" style="padding:12px 16px;font-size:13px;color:var(--ink2);line-height:1.8">点「检测」看看有多少个没用的邮箱。</div>
+        <div id="cleanList"></div>
+        <div class="addrow">
+          <button class="add" id="scanUnused">检测没用的邮箱</button>
+          <button class="add hidden" id="delUnused" style="background:#c92a2a;color:#fff">一键删除</button>
         </div>
       </div>
       <div class="row"><div>发信通道</div><span class="val">Resend（免费 100 封/天）</span></div>

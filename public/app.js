@@ -48,12 +48,16 @@ var scopePicked = false;               // 用户是否手动选过浏览范围�
 try {
   cardAddr = localStorage.getItem('ym_card') || '';
   var savedScope = localStorage.getItem('ym_scope');
-  if (savedScope) { curAddr = savedScope; scopePicked = true; }
+  if (savedScope) { curAddr = savedScope; }
+  // 「手动选过范围」单独记：persistView 每次都会存 ym_scope，不能拿它当「选过」的证据，
+  // 否则默认跟随自己地址的逻辑只在第一次访问生效，换了新地址还盯着旧地址看。
+  scopePicked = localStorage.getItem('ym_picked') === '1';
 } catch (e) { /* 隐私模式等存不了就用默认 */ }
 function persistView(){
   try {
     if (cardAddr && !cardTemp) localStorage.setItem('ym_card', cardAddr);
     localStorage.setItem('ym_scope', curAddr);
+    localStorage.setItem('ym_picked', scopePicked ? '1' : '');
   } catch (e) {}
 }
 
@@ -64,6 +68,12 @@ function guestDoms(){ return policies().filter(function(p){ return p.gopen; }).m
 function mainDomain(){ var p = policies().find(function(x){ return x.is_main; }); return p ? p.dom : (policies()[0] ? policies()[0].dom : ''); }
 function myAddrs(){ return S ? S.addresses : []; }
 function addrRow(a){ return myAddrs().find(function(x){ return x.address===a; }); }
+/* 当前地址还能不能用：注册用户看在不在自己名下；游客看域名还对不对游客开放
+   （游客地址是公共池的，不要求出现在地址列表里——列表只取最近 200 条） */
+function cardUsable(){
+  if(!cardAddr) return false;
+  return mode()==='user' ? !!addrRow(cardAddr) : guestDoms().indexOf(domOf(cardAddr)) >= 0;
+}
 function poolUsed(dom, kind){ var q = (S && S.quota && S.quota[dom]) || { c:0, r:0 }; return kind==='c' ? q.c : q.r; }
 
 /* ── 渲染 ── */
@@ -117,6 +127,8 @@ function renderSwitcher(){
 function renderCard(){
   $('curAddr').textContent = cardAddr || '—';
   $('saveAlias').classList.toggle('hidden', !cardTemp);
+  var cb = $('custBtn');
+  if(cb) cb.classList.toggle('hidden', mode()==='guest' && S && S.settings && !S.settings.guest_mode);
 }
 function canDeleteAddr(a){
   if(a.main) return false;
@@ -146,7 +158,13 @@ function renderAddrList(){
 function updateLenHint(){
   var el = $('lenHint'); if(!el) return;
   var pol = policyOf($('newDomSel').value);
-  if(!pol || mode()!=='user'){ el.textContent = ''; return; }
+  if(!pol){ el.textContent = ''; return; }
+  if(mode()==='guest'){
+    el.textContent = pol.gminlen && pol.gminlen!=='1'
+      ? '提示：'+pol.dom+' 的自定义前缀要求至少 '+pol.gminlen+' 位（站长设置，短前缀是稀缺资源）'
+      : '提示：'+pol.dom+' 的自定义前缀长度不限';
+    return;
+  }
   el.textContent = pol.uminlen && pol.uminlen!=='1'
     ? '提示：'+pol.dom+' 的自定义前缀要求至少 '+pol.uminlen+' 位（站长设置，短前缀是稀缺资源）'
     : '提示：'+pol.dom+' 的自定义前缀长度不限';
@@ -262,27 +280,31 @@ async function boot(){
   knownLatest = data.latest || 0;
   MAILS = data.mails || []; MAIL_TOTAL = data.total || 0; CODES = data.codes || [];
   // ── 当前地址：记住上次用的（localStorage）；没有可用的就定一个 ──
-  // 注册用户取主地址；游客没有自己的地址就现领一个随机地址。保证每个人
-  // 打开页面，手里先有一个「自己的地址」，而不是对着满屏别人的信找自己的。
-  if(!cardTemp && (!cardAddr || !addrRow(cardAddr))){
+  // 注册用户取主地址；游客记住上次那个（域名还开放就继续用，不重领），
+  // 真没有才现领一个随机地址。保证每个人打开页面，手里先有一个
+  // 「自己的地址」，刷新也不会把正在用的地址弄丢。
+  if(!cardTemp){
     if(data.mode==='user'){
-      var mainRow = myAddrs().find(function(a){ return a.main; });
-      cardAddr = mainRow ? mainRow.address : (myAddrs()[0] ? myAddrs()[0].address : '');
-    } else if(data.settings.guest_mode && !data.guestBlocked && guestDoms().length){
-      cardAddr = '';
-      try {
-        var r0 = await api('/api/guest/address', { method:'POST', body:{} });
-        cardAddr = r0.address;
-        var d2 = await api('/api/bootstrap');
-        S = d2; MAILS = d2.mails || []; MAIL_TOTAL = d2.total || 0; CODES = d2.codes || []; knownLatest = d2.latest || knownLatest;
-      } catch(e) { /* 游客随机额度已满：保持空卡，范围退回全部 */ }
+      if(!cardAddr || !addrRow(cardAddr)){
+        var mainRow = myAddrs().find(function(a){ return a.main; });
+        cardAddr = mainRow ? mainRow.address : (myAddrs()[0] ? myAddrs()[0].address : '');
+      }
     } else {
-      cardAddr = '';
+      if(cardAddr && guestDoms().indexOf(domOf(cardAddr)) < 0) cardAddr = ''; // 域名已不对游客开放，旧地址作废
+      if(!cardAddr && data.settings.guest_mode && !data.guestBlocked && guestDoms().length){
+        try {
+          var r0 = await api('/api/guest/address', { method:'POST', body:{} });
+          cardAddr = r0.address;
+          var d2 = await api('/api/bootstrap');
+          S = d2; MAILS = d2.mails || []; MAIL_TOTAL = d2.total || 0; CODES = d2.codes || []; knownLatest = d2.latest || knownLatest;
+        } catch(e) { /* 游客随机额度已满：保持空卡，范围退回全部 */ }
+      }
     }
   }
   // ── 浏览范围：手动选过的按记住的；没选过默认看自己的当前地址 ──
   // 这样列表第一个永远是自己邮箱最新的一封，不会被别人的信挤下去。
-  if(curAddr!=='all' && !addrRow(curAddr)) curAddr = 'all';
+  // 当前地址本身永远算数（它可能不在地址列表的 200 条里，不能因此被踢回「全部」）。
+  if(curAddr!=='all' && curAddr!==cardAddr && !addrRow(curAddr)) curAddr = 'all';
   if(!scopePicked && cardAddr) curAddr = cardAddr;
   persistView();
   renderAll();
@@ -293,8 +315,8 @@ async function softRefresh(){
   var data = await api('/api/bootstrap');
   S = data;
   knownLatest = data.latest || knownLatest;
-  if(curAddr!=='all' && !addrRow(curAddr)) curAddr = 'all';
-  if(!scopePicked && cardAddr && curAddr==='all' && addrRow(cardAddr)) curAddr = cardAddr;
+  if(curAddr!=='all' && curAddr!==cardAddr && !addrRow(curAddr)) curAddr = 'all';
+  if(!scopePicked && cardAddr && curAddr==='all' && cardUsable()) curAddr = cardAddr;
   CODES = data.codes || [];
   persistView();
   renderAll();
@@ -559,7 +581,8 @@ $('sheetList').addEventListener('click', function(e){
   exitSel();
   curAddr = el.getAttribute('data-pick');
   scopePicked = true;
-  cardAddr = curAddr==='all' ? (myAddrs()[0] ? myAddrs()[0].address : '') : curAddr; cardTemp = false;
+  // 选具体地址：卡片跟过去；选「全部」：卡片保持我自己的地址，别跳到池子里别人的地址上
+  if(curAddr!=='all'){ cardAddr = curAddr; cardTemp = false; }
   persistView();
   $('sheetWrap').classList.remove('show');
   renderAll(); refreshList(true); refreshCodes(); refreshPin();
@@ -570,7 +593,8 @@ $('sheetAdd').addEventListener('click', async function(){
   if(mode()==='guest'){
     try {
       var r = await api('/api/guest/address', { method:'POST', body:{} });
-      curAddr = r.address; cardAddr = r.address; cardTemp = false;
+      curAddr = r.address; cardAddr = r.address; cardTemp = false; scopePicked = false;
+      persistView();
       await softRefresh();
       toast('新的临时邮箱：'+r.address);
     } catch(e){ toast(e.message); }
@@ -579,19 +603,24 @@ $('sheetAdd').addEventListener('click', async function(){
   document.querySelector('#tabbar button[data-page="pageSettings"]').click();
   setTimeout(function(){ $('newPrefix').focus(); }, 250);
 });
-$('genBtn').addEventListener('click', function(){
+$('genBtn').addEventListener('click', async function(){
   if(mode()==='guest' && !(S.settings.guest_mode)){ toast('游客模式已关闭，请先登录'); show('authView'); return; }
-  var dom;
   if(mode()==='guest'){
-    var gd = guestDoms();
-    if(!gd.length){ toast('暂时没有开放给游客的域名'); return; }
-    dom = gd[Math.floor(Math.random()*gd.length)];
-  } else {
-    dom = curAddr==='all' ? mainDomain() : domOf(curAddr);
-    if(!dom){ toast('还没有可用域名'); return; }
+    // 游客「换一个」= 去服务器真领一个新随机地址，并让列表立刻跟过去看它：
+    // 以前是前端自己编一个没建过的地址，刷新就丢、信到了也对不上号。
+    try {
+      var r = await api('/api/guest/address', { method:'POST', body:{} });
+      curAddr = r.address; cardAddr = r.address; cardTemp = false; scopePicked = false;
+      persistView();
+      await softRefresh();
+      toast('新的临时邮箱：'+r.address);
+    } catch(e){ toast(e.message); }
+    return;
   }
+  var dom;
+  dom = curAddr==='all' ? mainDomain() : domOf(curAddr);
+  if(!dom){ toast('还没有可用域名'); return; }
   cardAddr = rndPrefix() + '@' + dom; cardTemp = true; renderCard();
-  if(mode()==='guest') toast('临时地址已生成，注册后可点「存为邮箱」长期保存');
 });
 $('saveAlias').addEventListener('click', async function(){
   if(mode()==='guest'){ show('authView'); toast('注册后就能把地址存成你的邮箱'); return; }
@@ -604,6 +633,67 @@ $('saveAlias').addEventListener('click', async function(){
   } catch(e){ toast(e.message); }
 });
 $('cpAddr').addEventListener('click', function(){ if(cardAddr) copy(cardAddr); });
+/* 手动刷新：先打一发最便宜的 /api/check（一条聚合 SQL）问有没有新信，
+   有才整页软刷新；没有就只刷当前列表。不整页重载、不碰地址，额度也省。 */
+$('refreshBtn').addEventListener('click', async function(){
+  var btn = this;
+  if(btn.disabled) return;
+  btn.disabled = true; btn.textContent = '刷新中…';
+  try {
+    var data = await api('/api/check');
+    if(data.latest && data.latest > knownLatest){
+      knownLatest = data.latest;
+      await softRefresh();
+      toast('已刷新，有新邮件');
+    } else {
+      await refreshList(true);
+      toast('已刷新，暂无新邮件');
+    }
+  } catch(e){ toast(e.message); }
+  btn.disabled = false; btn.textContent = '刷新';
+});
+
+/* ── 自定义前缀（地址卡上的入口，游客和注册用户都能用） ── */
+function fillCustDoms(){
+  var doms = mode()==='guest' ? guestDoms() : policies().map(function(p){ return p.dom; });
+  var prev = $('custDom').value;
+  $('custDom').innerHTML = doms.map(function(d){ return '<option value="'+esc(d)+'">@'+esc(d)+'</option>'; }).join('');
+  if(doms.indexOf(prev) > -1) $('custDom').value = prev;
+  updCustHint();
+}
+function updCustHint(){
+  var pol = policyOf($('custDom').value);
+  if(!pol){ $('custHint').textContent = ''; return; }
+  var ml = mode()==='guest' ? pol.gminlen : pol.uminlen;
+  $('custHint').textContent = (ml && ml !== '1')
+    ? '这个域名要求前缀至少 ' + ml + ' 位（站长设置，短前缀是稀缺资源）'
+    : '前缀用小写字母、数字、点和横线，1–31 位';
+}
+$('custBtn').addEventListener('click', function(){
+  if(mode()==='guest' && S && S.settings && !(S.settings.guest_mode)){ toast('游客模式已关闭，请先登录'); show('authView'); return; }
+  var f = $('custForm');
+  var opening = f.classList.contains('hidden');
+  f.classList.toggle('hidden', !opening);
+  if(opening){ fillCustDoms(); setTimeout(function(){ $('custPrefix').focus(); }, 60); }
+});
+$('custDom').addEventListener('change', updCustHint);
+$('custGo').addEventListener('click', async function(){
+  var p = $('custPrefix').value.trim().toLowerCase();
+  if(!/^[a-z0-9][a-z0-9._-]{0,30}$/.test(p)){ toast('前缀只能用小写字母、数字、点和横线（1–31 位）'); return; }
+  var dom = $('custDom').value;
+  if(!dom){ toast('先选一个域名'); return; }
+  try {
+    var r = mode()==='guest'
+      ? await api('/api/guest/address', { method:'POST', body:{ prefix: p, domain: dom } })
+      : await api('/api/addresses', { method:'POST', body:{ prefix: p, domain: dom, kind:'custom' } });
+    $('custPrefix').value = '';
+    $('custForm').classList.add('hidden');
+    curAddr = r.address; cardAddr = r.address; cardTemp = false; scopePicked = false;
+    persistView();
+    await softRefresh();
+    toast(r.existed ? '这个地址池子里已经有了，直接拿来用：'+r.address : '已创建邮箱：'+r.address);
+  } catch(e){ toast(e.message); }
+});
 var qTimer = null;
 $('q').addEventListener('input', function(){
   clearTimeout(qTimer);
@@ -665,9 +755,12 @@ $('addAddr').addEventListener('click', async function(){
     if(pol.uminlen && p.length < Number(pol.uminlen)){ toast('前缀太短：'+dom+' 要求至少 '+pol.uminlen+' 位（站长设置）'); return; }
   }
   try {
-    var r = await api('/api/addresses', { method:'POST', body:{ prefix: p, domain: dom, kind:'custom' } });
+    var r = mode()==='guest'
+      ? await api('/api/guest/address', { method:'POST', body:{ prefix: p, domain: dom } })
+      : await api('/api/addresses', { method:'POST', body:{ prefix: p, domain: dom, kind:'custom' } });
     $('newPrefix').value='';
-    curAddr = r.address; cardAddr = r.address; cardTemp = false;
+    curAddr = r.address; cardAddr = r.address; cardTemp = false; scopePicked = false;
+    persistView();
     await softRefresh();
     toast('已添加邮箱：'+r.address);
   } catch(e){ toast(e.message); }

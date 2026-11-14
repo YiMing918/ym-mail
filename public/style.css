@@ -31,6 +31,13 @@
   .addrpill .gen{background:var(--panel2);color:var(--ink)}
   .addrpill .save{background:#2f9e44;color:#fff}
   .addrpill .cp{background:var(--accent);color:#fff}
+  .custform{margin-top:8px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 12px}
+  .custform .custrow{display:flex;gap:8px;align-items:center}
+  .custform input{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:9px 11px;font-size:13.5px;color:var(--ink);outline:none}
+  .custform input:focus{border-color:var(--accent)}
+  .custform select{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:9px 6px;font-size:12.5px;color:var(--ink);max-width:38%}
+  .custform button{border:none;border-radius:9px;padding:9px 15px;font-size:12.5px;font-weight:600;background:var(--accent);color:#fff;flex:none}
+  .custform .custhint{margin-top:7px;font-size:11.5px;color:var(--ink3)}
   .quotabar{margin-top:9px;font-size:11.5px;color:var(--ink3);line-height:1.75;padding:0 2px}
   .quotabar b{color:var(--ink2);font-weight:600}
 

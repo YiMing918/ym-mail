@@ -262,5 +262,38 @@ export async function handleAdminApi(request, env, url) {
     return json({ ok: true });
   }
 
+  // ── 清理没用的邮箱：一键检测 / 一键删除 ──
+  // 口径（写死在服务端，前台说了不算）：游客池地址（没人认领）、从没收到过信
+  // （last_mail_at=0 且一封信都没有）、建好超过 30 分钟（刚建的留缓冲，可能有人正拿着注册）。
+  // 收到过信的、被认领的一律不碰。检测 2 条 SQL、删除 1 批 SQL，不逐个查删，省 D1 额度。
+  const UNUSED_WHERE = 'owner_id IS NULL AND last_mail_at = 0 AND created_at < ? AND NOT EXISTS (SELECT 1 FROM mails WHERE to_addr = addresses.address)';
+  if (path === '/api/admin/unused' && method === 'GET') {
+    const cutoff = Date.now() - 30 * 60_000;
+    const [agg, sample, pool] = await db.batch([
+      db.prepare(`SELECT domain, kind, COUNT(*) AS n FROM addresses WHERE ${UNUSED_WHERE} GROUP BY domain, kind ORDER BY domain, kind`).bind(cutoff),
+      db.prepare(`SELECT address, kind, created_at FROM addresses WHERE ${UNUSED_WHERE} ORDER BY created_at DESC LIMIT 100`).bind(cutoff),
+      db.prepare('SELECT COUNT(*) AS c FROM addresses WHERE owner_id IS NULL'),
+    ]);
+    const by = (agg.results || []).map((r) => ({ domain: r.domain, kind: r.kind, n: Number(r.n) }));
+    return json({
+      ok: true,
+      total: by.reduce((s, r) => s + r.n, 0),
+      by,
+      poolTotal: Number(pool.results?.[0]?.c ?? 0),
+      sample: (sample.results || []).map((r) => ({ address: r.address, kind: r.kind, created_at: Number(r.created_at) })),
+    });
+  }
+  if (path === '/api/admin/unused/delete' && method === 'POST') {
+    const cutoff = Date.now() - 30 * 60_000;
+    const sel = `SELECT address FROM addresses WHERE ${UNUSED_WHERE}`;
+    const res = await db.batch([
+      db.prepare(`DELETE FROM attachments WHERE mail_id IN (SELECT id FROM mails WHERE owner_id IS NULL AND to_addr IN (${sel}))`).bind(cutoff),
+      db.prepare(`DELETE FROM mails WHERE owner_id IS NULL AND to_addr IN (${sel})`).bind(cutoff),
+      db.prepare(`DELETE FROM addresses WHERE ${UNUSED_WHERE}`).bind(cutoff),
+    ]);
+    const last = res[res.length - 1];
+    return json({ ok: true, deleted: Number(last?.meta?.changes ?? 0) });
+  }
+
   return err(404, '接口不存在');
 }

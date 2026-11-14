@@ -317,6 +317,52 @@ function renderGuard(){
 }
 $('blHead').addEventListener('click', function(){ $('blDetail').classList.toggle('hidden'); this.classList.toggle('open'); });
 $('banHead').addEventListener('click', function(){ $('banDetail').classList.toggle('hidden'); this.classList.toggle('open'); });
+$('cleanHead').addEventListener('click', function(){ $('cleanDetail').classList.toggle('hidden'); this.classList.toggle('open'); });
+
+/* ── 清理没用的邮箱 ── */
+var lastUnused = 0;
+function disarmDelUnused(){
+  var b = $('delUnused'); b.classList.remove('arm'); b.textContent = '一键删除';
+}
+$('scanUnused').addEventListener('click', async function(){
+  disarmDelUnused();
+  try {
+    var d = await api('/api/admin/unused');
+    lastUnused = d.total;
+    $('cleanCount').textContent = d.total ? d.total + ' 个没用' : '';
+    if(!d.total){
+      $('cleanInfo').innerHTML = '没有没用的邮箱。游客池现在共 ' + d.poolTotal + ' 个地址，个个都收到过信，或是刚建不到 30 分钟。';
+      $('cleanList').innerHTML = '';
+      $('delUnused').classList.add('hidden');
+      return;
+    }
+    var byTxt = d.by.map(function(x){ return esc(x.domain) + ' · ' + (x.kind==='custom' ? '自定义' : '随机') + ' ' + x.n + ' 个'; }).join('；');
+    $('cleanInfo').innerHTML = '检测到 <b style="color:var(--ink)">' + d.total + ' 个</b>没用的邮箱（' + byTxt + '）。游客池共 ' + d.poolTotal + ' 个地址。删掉后这些地址就没了，额度立刻空出来；名单最多列前 100 个：';
+    $('cleanList').innerHTML = d.sample.map(function(x){
+      return '<div class="row"><div>' + esc(x.address) + '</div><span class="val">' + (x.kind==='custom' ? '自定义' : '随机') + ' · ' + new Date(x.created_at).toLocaleString('zh-CN') + ' 建 · 从没收到信</span></div>';
+    }).join('');
+    $('delUnused').classList.remove('hidden');
+  } catch(e){ toast(e.message); }
+});
+$('delUnused').addEventListener('click', async function(){
+  if(!lastUnused){ toast('先点检测'); return; }
+  if(!this.classList.contains('arm')){
+    this.classList.add('arm'); this.textContent = '再点一次，确认删除 ' + lastUnused + ' 个';
+    setTimeout(disarmDelUnused, 3000);
+    return;
+  }
+  try {
+    var r = await api('/api/admin/unused/delete', { method:'POST', body:{} });
+    disarmDelUnused();
+    $('delUnused').classList.add('hidden');
+    $('cleanList').innerHTML = '';
+    $('cleanCount').textContent = '';
+    $('cleanInfo').innerHTML = '已删除 ' + r.deleted + ' 个没用的邮箱。再点一次「检测」可以复查。';
+    lastUnused = 0;
+    toast('已删除 ' + r.deleted + ' 个没用的邮箱');
+    loadAdmin();
+  } catch(e){ toast(e.message); }
+});
 $('blAdd').addEventListener('click', async function(){
   var v = $('blInput').value.trim().toLowerCase();
   if(!v || (v.indexOf('@')===-1)){ toast('填发件人邮箱，或 @域名 表示整个域名'); return; }

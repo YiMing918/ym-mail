@@ -28,8 +28,17 @@
     <div class="addrpill">
       <span class="addr" id="curAddr">—</span>
       <button class="gen" id="genBtn">换一个</button>
+      <button class="gen" id="custBtn">自定义</button>
       <button class="save hidden" id="saveAlias">存为邮箱</button>
       <button class="cp" id="cpAddr">复制</button>
+    </div>
+    <div class="custform hidden" id="custForm">
+      <div class="custrow">
+        <input id="custPrefix" type="text" placeholder="想要的前缀，如 myname" autocomplete="off">
+        <select id="custDom"></select>
+        <button class="gen" id="custGo">创建</button>
+      </div>
+      <div class="custhint" id="custHint"></div>
     </div>
     <div class="quotabar" id="quotaStrip"></div>
   </header>
@@ -38,6 +47,7 @@
     <section id="pageInbox">
       <div class="searchbar">
         <input id="q" type="search" placeholder="搜索邮件 / 验证码…">
+        <button id="refreshBtn">刷新</button>
         <button id="readAll">全部已读</button>
         <button id="selBtn">选择</button>
       </div>
