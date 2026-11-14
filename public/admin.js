@@ -45,6 +45,7 @@ function grpSummary(p, grp){
   var del = grp==='u' ? p.udel : p.gdel;
   var refund = grp==='u' ? p.urefund : p.grefund;
   var minlen = grp==='u' ? p.uminlen : p.gminlen;
+  if(grp==='g') return '自定义 ' + l(custom) + ' · 随机 ' + l(random) + (minlen && minlen!=='1' ? ' · 前缀≥'+minlen+' 位' : '');
   return '自定义 ' + l(custom) + ' · 随机 ' + l(random) + (minlen && minlen!=='1' ? ' · 前缀≥'+minlen+' 位' : '') + ' · ' + (del ? (refund ? '可删·返额' : '可删·不返额') : '不可删');
 }
 function lenOpts(cur){
@@ -73,13 +74,20 @@ function polRow(i, p, grp){
   var key = i + ':' + grp, isOpen = !!polGrpOpen[key];
   var head = '<button class="polhead'+(isOpen?' open':'')+'" data-grphead="'+key+'" style="padding:11px 0 9px"><span class="inf"><span style="font-size:13.5px;font-weight:700;color:var(--ink2)">'+(grp==='u'?'注册用户':'没注册的游客')+'</span><span class="sm" style="display:block">'+esc(grpSummary(p, grp))+'</span></span><span class="chev">▾</span></button>';
   if(!isOpen) return head;
+  var delRows;
+  if(grp==='g'){
+    delRows = '<div style="margin-top:8px;font-size:12px;color:var(--ink3);line-height:1.7">游客没有删除入口（删地址要先登录），所以「能不能删、删后返不返还」对游客不生效，不用设。游客的地址由系统按保留天数 / 闲置天数自动清理，名额自动返还。</div>';
+  } else {
+    delRows = '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">允许删掉地址吗</span><button class="switch'+(del?' on':'')+'" data-pol="'+i+'" data-k="'+grp+'del" style="margin-left:auto"></button></div>'
+    + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">删掉后返还额度吗</span><button class="switch'+(refund?' on':'')+'" data-pol="'+i+'" data-k="'+grp+'refund" style="margin-left:auto"></button></div>'
+    + '<div style="margin-top:6px;font-size:12px;color:var(--ink3);line-height:1.7">这两个开关自定义、随机都管，删哪种就占哪种的名额。不返还＝删了也继续占名额（防反复删建抢名字），名额占满就建不了新的；想让人能真正删掉重建，把「返还」也打开。</div>';
+  }
   return head + '<div style="padding-bottom:6px">'
     + '<div style="display:flex;align-items:center;gap:8px;margin-top:2px"><span style="font-size:13.5px">可以用这个域名</span><button class="switch'+(open?' on':'')+'" data-pol="'+i+'" data-k="'+grp+'open" style="margin-left:auto"></button></div>'
     + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">自定义前缀能建几个</span>'+limCtrl(i, grp, 'custom', custom)+'</div>'
     + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">随机地址能用几个</span>'+limCtrl(i, grp, 'random', random)+'</div>'
     + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">自定义前缀最少几位</span><input type="number" min="1" max="32" step="1" inputmode="numeric" data-pol="'+i+'" data-k="'+grp+'minlen" data-limlen="1" value="'+(minlen || '1')+'" style="'+sel+'width:74px;text-align:center"></div>'
-    + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">能删掉重建吗</span><button class="switch'+(del?' on':'')+'" data-pol="'+i+'" data-k="'+grp+'del" style="margin-left:auto"></button></div>'
-    + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:13.5px">删掉后返还额度吗</span><button class="switch'+(refund?' on':'')+'" data-pol="'+i+'" data-k="'+grp+'refund" style="margin-left:auto"></button></div></div>';
+    + delRows + '</div>';
 }
 function polSummary(p){
   function seg(open, custom, random){
