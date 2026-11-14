@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>佲的邮箱</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- ══════════ 前台 ══════════ -->
+<div id="frontView">
+  <header>
+    <div class="brand">
+      <div class="mark">佲</div>
+      <div class="name">佲的邮箱</div>
+      <div class="acts">
+        <button id="btnAdmin">后台</button>
+        <button class="primary" id="btnAuth">登录 / 注册</button>
+        <button class="hidden" id="btnLogout">退出</button>
+      </div>
+    </div>
+    <div class="modebar" id="modeBar"></div>
+    <button class="boxbar" id="boxBar">
+      <span class="ic">📬</span>
+      <span class="who"><span class="a" id="boxName">—</span><span class="b" id="boxSub" style="display:block">点这里切换邮箱</span></span>
+      <span class="chev">切换 ▾</span>
+    </button>
+    <div class="addrpill">
+      <span class="addr" id="curAddr">—</span>
+      <button class="gen" id="genBtn">换一个</button>
+      <button class="save hidden" id="saveAlias">存为邮箱</button>
+      <button class="cp" id="cpAddr">复制</button>
+    </div>
+    <div class="quotabar" id="quotaStrip"></div>
+  </header>
+
+  <main>
+    <section id="pageInbox">
+      <div class="searchbar">
+        <input id="q" type="search" placeholder="搜索邮件 / 验证码…">
+        <button id="readAll">全部已读</button>
+        <button id="selBtn">选择</button>
+      </div>
+      <div class="chips" id="chips">
+        <button class="chip on" data-f="all">全部</button>
+        <button class="chip" data-f="unread">未读</button>
+        <button class="chip" data-f="star">星标</button>
+        <button class="chip" data-f="att">带附件</button>
+        <button class="chip" data-f="sent" style="margin-left:auto">已发送</button>
+      </div>
+      <div id="mailList"></div>
+      <button id="loadMore" class="hidden" style="display:block;margin:6px auto 10px;background:var(--panel);border:1px solid var(--line);color:var(--ink2);border-radius:999px;padding:10px 22px;font-size:13px">加载更多</button>
+    </section>
+
+    <section id="pageCodes" class="hidden">
+      <div class="secttl">最近的验证码 · 点复制直接用</div>
+      <div id="codeList"></div>
+    </section>
+
+    <section id="pageCompose" class="hidden">
+      <div id="composeLock" class="empty hidden"><span class="big">🔒</span>游客不能发信（防止滥发）<br>注册一个账号就能发信，免费。</div>
+      <form class="compose" id="composeForm">
+        <label>发件邮箱</label>
+        <select id="cFrom"></select>
+        <label>收件人</label>
+        <input id="cTo" type="email" placeholder="someone@example.com" required>
+        <label>主题</label>
+        <input id="cSubject" type="text" required>
+        <label>正文</label>
+        <textarea id="cText" rows="8"></textarea>
+        <button class="send" type="submit" id="cSend">发送（经 Resend 免费通道）</button>
+      </form>
+    </section>
+
+    <section id="pageSettings" class="hidden">
+      <div id="mySettings">
+        <div class="group">
+          <div class="gt">我的设置</div>
+          <div class="row"><div>Telegram 推送<div class="sub">新邮件带验证码直推手机（需先在下面填你的 Chat ID）</div></div><button class="switch" id="swTg" aria-label="TG推送"></button></div>
+          <div class="row"><div>我的 Telegram Chat ID<div class="sub">给站长的 bot 发一句话，用 @userinfobot 查到的数字</div></div><input id="tgChatId" type="text" inputmode="numeric" placeholder="未填" style="margin-left:auto;width:130px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:right"></div>
+          <div class="row"><div>备份转发到我的邮箱<div class="sub">你名下邮箱收到新信时，抄送一份到你注册用的邮箱<br>当前：<span id="fwdEmail">—</span></div></div><button class="switch" id="swForward" aria-label="备份转发"></button></div>
+          <div class="row"><div>邮件统计</div><span class="val" id="statVal">—</span></div>
+          <div class="row"><div>我的邮件保留<div class="sub" id="myRetNote">超过天数自动删除，星标不删</div></div></div>
+          <div class="retchips" id="myRet" style="padding-top:0"></div>
+        </div>
+        <div class="group">
+          <div class="gt">我的邮箱</div>
+          <div id="addrList"></div>
+          <div class="addrow">
+            <input id="newPrefix" type="text" placeholder="前缀（自己想，或点随机）">
+            <button class="rnd" id="rndPrefix">随机</button>
+            <select id="newDomSel"></select>
+            <button class="add" id="addAddr">添加邮箱</button>
+          </div>
+          <div class="note" id="lenHint" style="padding:2px 16px 12px"></div>
+        </div>
+        <div class="note">被你认领的邮箱是锁定的：只有你登录后能看，别人知道地址也看不到里面的信。没被任何人认领的地址才是公开的临时邮箱，谁知道地址谁能看——所以重要地址一定要登录认领。</div>
+      </div>
+      <div id="guestSettingsNote" class="empty hidden"><span class="big">🔒</span>登录后这里是你的邮箱管理<br>游客的临时邮箱在顶部切换就行</div>
+    </section>
+  </main>
+
+  <div class="selbar hidden" id="selBar"><div class="in">
+    <span class="cnt" id="selCount">已选 0 封</span>
+    <button id="selAll">全选</button>
+    <button class="del" id="selDel">删除所选</button>
+    <button id="selExit">完成</button>
+  </div></div>
+
+  <nav id="tabbar"><div class="in">
+    <button data-page="pageInbox" class="on"><span class="ic">📥</span>收件箱<span class="bdg" id="unreadBdg">0</span></button>
+    <button data-page="pageCodes"><span class="ic">🔑</span>验证码</button>
+    <button data-page="pageCompose"><span class="ic">✏️</span>写信</button>
+    <button data-page="pageSettings"><span class="ic">⚙️</span>我的</button>
+  </div></nav>
+</div>
+
+<!-- ══════════ 登录 / 注册 ══════════ -->
+<div id="authView" class="hidden">
+  <div class="authwrap">
+    <div class="mark">佲</div>
+    <h1>佲的邮箱</h1>
+    <div class="sub">注册后：邮箱长期保存、可发信、认领的地址别人看不见</div>
+    <div class="authtabs">
+      <button class="on" id="tabLogin">登录</button>
+      <button id="tabReg">注册新账号</button>
+    </div>
+    <input id="authUser" type="text" placeholder="账号" autocomplete="username">
+    <input id="authPw" type="password" placeholder="密码（至少 8 位）" autocomplete="current-password">
+    <div id="regFields" class="hidden">
+      <div id="emailFields">
+        <input id="authEmail" type="email" placeholder="你的真实邮箱（收验证码用）">
+        <div id="codeRow" style="display:flex;gap:8px">
+          <input id="authCode" type="text" inputmode="numeric" placeholder="邮箱验证码" style="flex:1">
+          <button id="sendCode" style="flex:none;background:var(--panel2);border:1px solid var(--line);color:var(--accent2);border-radius:14px;padding:0 16px;font-size:13.5px">发送验证码</button>
+        </div>
+        <div id="regNote" style="color:var(--ink3);font-size:12px;line-height:1.6;margin:-2px 0 10px">注册要验真实邮箱：验证码发到你自己的常用邮箱，验过了才能注册——不是谁随手就能注册。</div>
+      </div>
+      <div id="inviteField" class="hidden">
+        <input id="authInvite" type="text" placeholder="邀请码（站长发给你的）" style="text-transform:uppercase">
+        <div style="color:var(--ink3);font-size:12px;line-height:1.6;margin:-2px 0 10px">现在是邀请码注册：填站长发的邀请码就能注册（可用次数由站长生成时定）。上面的邮箱也要填，备份转发和找回都靠它。</div>
+      </div>
+    </div>
+    <button class="go" id="authGo">登录</button>
+    <button class="back" id="authBack">‹ 先不登录，随便逛逛</button>
+  </div>
+</div>
+
+<div id="detailView" class="hidden"></div>
+
+<div id="sheetWrap">
+  <div id="sheet">
+    <div class="grab"></div>
+    <div class="st">选择邮箱</div>
+    <div id="sheetList"></div>
+    <button class="boxrow add" id="sheetAdd">＋ 新建邮箱</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

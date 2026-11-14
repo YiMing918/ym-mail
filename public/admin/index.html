@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>佲的邮箱 · 管理后台</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- ══════════ 后台登录 ══════════ -->
+<div id="adminLoginView">
+  <div class="authwrap">
+    <div class="mark adminmark">⚙</div>
+    <h1>管理后台</h1>
+    <div class="sub">/admin · 只有站长能进</div>
+    <input id="admUser" type="text" placeholder="管理员账号" autocomplete="username">
+    <input id="admPw" type="password" placeholder="管理员密码" autocomplete="current-password">
+    <button class="go" id="admGo">进入后台</button>
+    <button class="back" id="admBack">‹ 返回前台</button>
+  </div>
+</div>
+
+<!-- ══════════ 后台 ══════════ -->
+<div id="adminView" class="hidden">
+  <div class="admintop">
+    <span class="t">管理后台</span><span class="tag">/admin</span>
+    <button id="admFront">看前台</button>
+    <button id="admOut">退出后台</button>
+  </div>
+  <main style="padding-bottom:30px">
+    <div class="statgrid">
+      <div class="stat"><div class="n" id="statUsers">—</div><div class="l">注册用户</div></div>
+      <div class="stat"><div class="n" id="statAddresses">—</div><div class="l">已建邮箱</div></div>
+      <div class="stat"><div class="n" id="statToday">—</div><div class="l">今日收信</div></div>
+    </div>
+
+    <div class="group">
+      <div class="gt">域名政策 · 谁能用、用几个，都在这定</div>
+      <div id="policyList"></div>
+      <div class="addrow">
+        <input id="newDomInput" type="text" placeholder="新域名，如 mail.example.com">
+        <button class="add" id="addDomain">＋ 添加域名</button>
+      </div>
+    </div>
+    <div class="note">每个域名单独定规矩，还分两种人（注册用户 / 没注册的游客）、两种地址（<b style="color:var(--ink2)">自定义前缀</b> = 自己起名的、<b style="color:var(--ink2)">随机地址</b> = 系统生成的），个数各设各的；选 <b style="color:var(--ink2)">0 个</b> = 普通用户一个都建不了（站长账号不受这些数限制）。<b style="color:var(--ink2)">能不能删掉重建、删掉返不返额度</b>也在这定：关掉返还，删了名额照样占着，防的是反复删建刷名字。游客的邮件按保留天数自动清。删域名只是停用（存量邮件保留在库里）。</div>
+
+    <div class="group">
+      <div class="gt">全站开关</div>
+      <div class="row"><div>注册方式<div class="sub">邮箱验证 = 填真实邮箱收码才能注册；邀请码 = 有你发的码才能注册</div></div>
+        <select id="regMode"><option value="email">邮箱验证</option><option value="invite">邀请码</option><option value="off">关闭注册</option></select></div>
+      <div id="inviteRow" class="hidden">
+        <button class="polhead" id="invHead" style="padding:13px 16px"><span class="inf"><span style="font-size:14.5px">邀请码</span><span class="sm" style="display:block">发给谁，谁才能注册；生成时能选用几次，点开管理</span></span><span class="val" id="invCount" style="color:var(--ink2);font-size:13px"></span><span class="chev">▾</span></button>
+        <div id="invDetail" class="hidden" style="border-top:1px dashed var(--line)">
+          <div id="invList"></div>
+          <div class="addrow">
+            <select id="invUses" style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 8px;font-size:13px;color:var(--ink)"><option value="1">用 1 次</option><option value="5">用 5 次</option><option value="10">用 10 次</option><option value="-1">不限次</option></select>
+            <button class="add" id="genInvite">＋ 生成邀请码</button>
+          </div>
+        </div>
+      </div>
+      <div class="row"><div>游客模式<div class="sub">关掉后必须登录才能用</div></div><button class="switch" id="swGuestMode" aria-label="游客模式"></button></div>
+      <div class="row"><div>Telegram 推送（你的）<div class="sub">你的新邮件直推（需在服务器配 TG_BOT_TOKEN 与 TG_CHAT_ID）</div></div><button class="switch" id="swAdminTg" aria-label="TG推送"></button></div>
+      <div class="row"><div>系统发件地址<div class="sub">注册验证码从这个地址发；留空 = noreply@第一个域名</div></div><input id="mailFrom" type="text" placeholder="noreply@你的域名" style="margin-left:auto;width:170px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:right"></div>
+    </div>
+
+    <div class="group">
+      <div class="gt">清理</div>
+      <div class="row" style="border-top:none"><div>游客邮件保留<div class="sub">游客的邮件超过天数自动删</div></div></div>
+      <div class="retchips" id="retGuest">
+        <button class="retchip" data-d="1">1 天</button>
+        <button class="retchip" data-d="3">3 天</button>
+        <button class="retchip" data-d="7">7 天</button>
+        <button class="retchip" data-d="15">15 天</button>
+        <button class="retchip" data-d="30">30 天</button>
+      </div>
+      <div class="row"><div>注册用户的邮件 · 最长保存<div class="sub">保存的是「邮件」：注册用户自己选邮件保存天数时，不能超过这个上限。到期邮件自动删，星标不删</div></div></div>
+      <div class="retchips" id="retUser">
+        <button class="retchip" data-d="15">15 天</button>
+        <button class="retchip" data-d="30">30 天</button>
+        <button class="retchip" data-d="90">90 天</button>
+        <button class="retchip" data-d="180">180 天</button>
+        <button class="retchip" data-d="365">1 年</button>
+        <button class="retchip" data-d="0">不限</button>
+      </div>
+      <div class="row"><div>随机地址闲置清理<div class="sub">随机地址多久没收到新信，就连地址带信一起删掉；自定义前缀的地址不删。系统清理掉的会返还额度</div></div></div>
+      <div class="retchips" id="retIdle">
+        <button class="retchip" data-d="1">1 天</button>
+        <button class="retchip" data-d="3">3 天</button>
+        <button class="retchip" data-d="7">7 天</button>
+        <button class="retchip" data-d="15">15 天</button>
+        <button class="retchip" data-d="30">30 天</button>
+        <button class="retchip" data-d="0">不清理</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="gt">防护</div>
+      <button class="polhead" id="blHead" style="padding:13px 16px"><span class="inf"><span style="font-size:14.5px">发件黑名单</span><span class="sm" style="display:block">这些发件人的邮件直接拒收</span></span><span class="val" id="blCount" style="color:var(--ink2);font-size:13px"></span><span class="chev">▾</span></button>
+      <div id="blDetail" class="hidden" style="border-top:1px dashed var(--line)">
+        <div id="blList"></div>
+        <div class="addrow">
+          <input id="blInput" type="text" placeholder="发件人邮箱或 @域名">
+          <button class="add" id="blAdd">＋ 拉黑</button>
+        </div>
+      </div>
+      <button class="polhead" id="banHead" style="padding:13px 16px;border-top:1px solid var(--line)"><span class="inf"><span style="font-size:14.5px">封禁的收件地址</span><span class="sm" style="display:block">这些地址不再收信（防被人抢注乱用）</span></span><span class="val" id="banCount" style="color:var(--ink2);font-size:13px"></span><span class="chev">▾</span></button>
+      <div id="banDetail" class="hidden" style="border-top:1px dashed var(--line)">
+        <div id="banList"></div>
+        <div class="addrow">
+          <input id="banInput" type="text" placeholder="要封禁的完整地址">
+          <button class="add" id="banAdd">＋ 封禁</button>
+        </div>
+      </div>
+      <div class="row"><div>发信通道</div><span class="val">Resend（免费 100 封/天）</span></div>
+      <div class="row"><div>运行成本</div><span class="val">¥0 · Cloudflare 免费额度</span></div>
+    </div>
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<script src="/admin.js"></script>
+</body>
+</html>

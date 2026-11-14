@@ -1,0 +1,43 @@
+# ============================================================
+# 佲的邮箱 · 正式版 wrangler 配置（示例）
+# 用法：复制为 wrangler.toml 后按注释替换占位项，再 wrangler deploy
+# 本文件不含任何账号信息，可部署到任意 Cloudflare 账号。
+# ============================================================
+
+# Worker 名称（账号内唯一，可自改）
+name = "ym-mail"
+
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# ---- 静态资源：public/ 里的页面/样式/脚本走静态托管（免费不限量，
+# 不占 Worker 请求额度）；Worker 只接管 /api/* 与 /admin。
+# 注意：run_worker_first 的「数组」写法需要 wrangler 4.x。若用旧版 wrangler，
+# 把它改成 true 也能跑，但静态资源会先过 Worker、占请求额度，不推荐长期使用。----
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/api/*", "/admin", "/admin/"]
+
+# ---- 定时清理：每天一次（UTC 19:15 = 北京 03:15）批量做完全部清理，
+# 保留天数等参数在后台改，不用动这里 ----
+[triggers]
+crons = ["15 19 * * *"]
+
+# ---- D1 数据库：存用户/地址/邮件/会话/政策/设置（不用 KV）----
+# 先执行 wrangler d1 create ym-mail-db，把输出的 database_id 填到这里
+[[d1_databases]]
+binding = "DB"
+database_name = "ym-mail-db"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+# ---- 可选普通变量 ----
+# [vars]
+# TG_CHAT_ID = "你的 Telegram chat id（站长推送目标）"
+#
+# 需要用 wrangler secret put 设置的敏感变量（不要写进本文件、不要提交到 Git）：
+# ADMIN_USER          管理员账号（后台 /admin 登录用）
+# ADMIN_PASSWORD_HASH 管理员密码的 PBKDF2 哈希，用 npm run hash -- '密码' 生成
+# RESEND_API_KEY      发信通道（注册验证码 + 用户发信）；不设则发信类功能返回明确报错
+# TG_BOT_TOKEN        （可选）Telegram Bot Token，开了才有 TG 推送
