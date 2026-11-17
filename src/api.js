@@ -12,7 +12,7 @@ import { loadConfig, policyForClient } from './config.js';
 import { sendViaResend, systemFrom, SendError } from './send.js';
 import {
   json, err, readJson, clientIp, domOf, prefixOf,
-  EMAIL_RE, PREFIX_RE, rateLocked, rateFail, rateClear,
+  EMAIL_RE, PREFIX_RE, rateLocked, rateFail, rateClear, ratePeek, rateBump,
 } from './util.js';
 
 const PAGE_SIZE = 30;
@@ -667,10 +667,28 @@ export async function handleApi(request, env, url) {
 
     const isOwner = isFirst ? 1 : 0;
     const pwHash = await hashPassword(password);
-    const ins = await db
-      .prepare('INSERT INTO users (username, email, pw_hash, is_owner, created_at) VALUES (?, ?, ?, ?, ?)')
-      .bind(username, email, pwHash, isOwner, Date.now())
-      .run();
+    // 首账号原子化（2026-11-17 审计核验 #2）：isFirst 是「先查 COUNT 再 INSERT」，
+    // 两个并发请求能同时读到 0、都写成站长。站长路径改单条条件 INSERT
+    // （WHERE NOT EXISTS）——单条语句在 D1/SQLite 里原子执行，后到者 changes=0，
+    // 回 409 让它刷新后走正常注册流程。产品行为不变：第一个账号仍是站长、仍免门槛，
+    // 单人注册路径零变化。普通路径保留原 INSERT，唯一约束冲突转成友好报错。
+    let ins;
+    try {
+      ins = isFirst
+        ? await db
+            .prepare('INSERT INTO users (username, email, pw_hash, is_owner, created_at) SELECT ?, ?, ?, 1, ? WHERE NOT EXISTS (SELECT 1 FROM users)')
+            .bind(username, email, pwHash, Date.now())
+            .run()
+        : await db
+            .prepare('INSERT INTO users (username, email, pw_hash, is_owner, created_at) VALUES (?, ?, ?, 0, ?)')
+            .bind(username, email, pwHash, Date.now())
+            .run();
+    } catch {
+      return err(400, '这个账号名或邮箱刚被别人抢先注册了，换一个吧');
+    }
+    if (isFirst && (!ins.meta || ins.meta.changes === 0)) {
+      return err(409, '站长账号刚刚已被创建，请刷新后重新注册（将按正常注册流程）');
+    }
     const newId = Number(ins.meta.last_row_id);
     // 个人邀请码 + 邀请奖励：注册时填了某位用户的个人码，邀请人加专属额度
     // （个数站长后台自填；一人只奖一次，referrals 唯一约束兜底）
@@ -758,6 +776,19 @@ export async function handleApi(request, env, url) {
     if (subject.length > 200 || text.length > 20000) return err(400, '内容太长了');
     const mine = await db.prepare('SELECT address FROM addresses WHERE address = ? AND owner_id = ?').bind(from, viewer.user.id).first();
     if (!mine) return err(403, '发件地址不是你的邮箱');
+    // 按用户限速（2026-11-17 审计核验 #14）：Resend 免费额度全站共享（100 封/天），
+    // 此前发信没有任何限速，任一注册用户就能把全站当天额度刷光、连带站长发不出信。
+    // 双窗口计数（D1 rate_limits 表，与登录/发码限速同表不同键）：每小时 20 封、
+    // 每天 50 封——个人邮箱的正常用量远低于此，够用且刷不满全站日额度的一半。
+    // 站长豁免（与站内政策对站长豁免的既有惯例一致）。计数在发信前记，失败也计，
+    // 防用失败重试绕过。
+    if (!viewer.user.is_owner) {
+      const uid = viewer.user.id;
+      if ((await ratePeek(db, `send-h:${uid}`, 3600_000)) >= 20) return err(429, '发信太频繁：每小时最多 20 封，请稍后再发');
+      if ((await ratePeek(db, `send-d:${uid}`, 24 * 3600_000)) >= 50) return err(429, '今天发信已达上限（每天 50 封），明天再发吧');
+      await rateBump(db, `send-h:${uid}`, 3600_000);
+      await rateBump(db, `send-d:${uid}`, 24 * 3600_000);
+    }
     try {
       await sendViaResend(env, { from: `佲 <${from}>`, to, subject, text });
     } catch (e) {

@@ -102,3 +102,29 @@ export async function rateFail(db, key, maxFails, lockMs) {
 export async function rateClear(db, key) {
   await db.prepare('DELETE FROM rate_limits WHERE key = ?').bind(key).run().catch(() => {});
 }
+
+// 计数型限额（发信配额用）：看窗口内已用数 / 记一次。用同一张 rate_limits 表、
+// 不同键名，与失败锁定互不干扰。读后写、非强原子（与 rateFail 同口径）——
+// 发信配额是防滥用闸不是安全边界，并发下个位数溢出可接受。
+export async function ratePeek(db, key, windowMs) {
+  try {
+    const row = await db.prepare('SELECT count, updated_at FROM rate_limits WHERE key = ?').bind(key).first();
+    if (!row) return 0;
+    return Date.now() - Number(row.updated_at || 0) < windowMs ? Number(row.count || 0) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function rateBump(db, key, windowMs) {
+  const now = Date.now();
+  const cur = await ratePeek(db, key, windowMs);
+  await db
+    .prepare(
+      `INSERT INTO rate_limits (key, count, lock_until, updated_at) VALUES (?, ?, 0, ?)
+       ON CONFLICT(key) DO UPDATE SET count = excluded.count, lock_until = 0, updated_at = excluded.updated_at`
+    )
+    .bind(key, cur + 1, now)
+    .run()
+    .catch(() => {});
+}
