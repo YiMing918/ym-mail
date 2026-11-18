@@ -4,7 +4,7 @@
 // * 列表只查摘要列，正文/附件点开才拉。
 // * 可见性一律按 mails.owner_id 快照判断（收信时写入，认领时一次性迁移），查询简单稳定。
 import {
-  hashPassword, verifyPassword, sha256Hex, randomDigits,
+  hashPassword, verifyPassword, sha256Hex, randomDigits, DUMMY_PW_HASH,
   createDbSession, getDbSession, destroyDbSession,
   USER_COOKIE, sessionCookie, clearCookie, randomAddressPrefix,
 } from './auth.js';
@@ -172,8 +172,9 @@ async function listAddresses(env, viewer) {
 
 // ---------- 邀请奖励：专属额度（邀请一人给几个由站长在后台自填 ref_bonus_n，在域名政策上限之外叠加） ----------
 function randomInviteCode() {
+  // 个人邀请码随机部分 8 位（C-37，原 5 位）；旧 5 位码查表校验、不依赖长度，照常可用
   const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-  const buf = new Uint32Array(5);
+  const buf = new Uint32Array(8);
   crypto.getRandomValues(buf);
   return 'YM-' + [...buf].map((n) => chars[n % chars.length]).join('');
 }
@@ -223,25 +224,51 @@ async function createOrClaim(env, cfg, user, addrRaw, kind) {
     }
   }
   const now = Date.now();
+  if (existing) {
+    // 认领公开地址（对抗复读 C-3 竞态修复）：旧写法先读 existing 再无条件 UPDATE，
+    // 两个并发认领能同时读到「未认领」、双双成功（后写的盖掉先写的、邮件被迁走、
+    // 两边专属额度都被扣）。改成单条条件 UPDATE 抢占：只有 owner_id 仍为 NULL 才
+    // 抢得到，按 meta.changes 判成败。顺序也调了：先抢占 → 再扣专属额度 → 最后才
+    // 迁移历史邮件；抢败零副作用（不扣额度、不迁邮件），扣额度失败则把地址放回。
+    const claim = await env.DB.prepare(
+      'UPDATE addresses SET owner_id = ?, kind = ?, bonus_used = ? WHERE address = ? AND owner_id IS NULL'
+    )
+      .bind(user.id, kind, useBonus, addr)
+      .run();
+    if (!claim.meta || claim.meta.changes === 0) return { error: [403, '这个地址已被别人认领了'] };
+    const releaseClaim = () =>
+      env.DB.prepare('UPDATE addresses SET owner_id = NULL, bonus_used = 0 WHERE address = ? AND owner_id = ?')
+        .bind(addr, user.id)
+        .run()
+        .catch(() => {});
+    if (useBonus) {
+      const dec = await env.DB.prepare('UPDATE users SET bonus = bonus - 1 WHERE id = ? AND bonus > 0').bind(user.id).run();
+      if (!dec.meta || dec.meta.changes === 0) {
+        await releaseClaim();
+        return { error: [403, '专属额度刚刚用完了'] };
+      }
+    }
+    try {
+      // 抢占成功后才把历史邮件的归属快照一次性迁移给认领者
+      await env.DB.prepare('UPDATE mails SET owner_id = ? WHERE to_addr = ? AND owner_id IS NULL').bind(user.id, addr).run();
+    } catch (e) {
+      if (useBonus) await env.DB.prepare('UPDATE users SET bonus = bonus + 1 WHERE id = ?').bind(user.id).run().catch(() => {});
+      await releaseClaim();
+      throw e;
+    }
+    return { address: addr };
+  }
+  // 新建地址：地址主键唯一约束兜底并发同名新建；保持原顺序（先原子扣额度、失败退回）
   if (useBonus) {
     const dec = await env.DB.prepare('UPDATE users SET bonus = bonus - 1 WHERE id = ? AND bonus > 0').bind(user.id).run();
-    if (!dec.meta || dec.meta.changes === 0) useBonus = 0;
-    if (!useBonus) return { error: [403, '专属额度刚刚用完了'] };
+    if (!dec.meta || dec.meta.changes === 0) return { error: [403, '专属额度刚刚用完了'] };
   }
   try {
-    if (existing) {
-      // 认领公开地址：连同历史邮件一起锁定给认领者（一次性迁移归属快照）
-      await env.DB.batch([
-        env.DB.prepare('UPDATE addresses SET owner_id = ?, kind = ?, bonus_used = ? WHERE address = ?').bind(user.id, kind, useBonus, addr),
-        env.DB.prepare('UPDATE mails SET owner_id = ? WHERE to_addr = ? AND owner_id IS NULL').bind(user.id, addr),
-      ]);
-    } else {
-      await env.DB.prepare(
-        'INSERT INTO addresses (address, domain, prefix, kind, owner_id, protected, bonus_used, created_at, last_mail_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0)'
-      )
-        .bind(addr, domain, prefix, kind, user.id, useBonus, now)
-        .run();
-    }
+    await env.DB.prepare(
+      'INSERT INTO addresses (address, domain, prefix, kind, owner_id, protected, bonus_used, created_at, last_mail_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0)'
+    )
+      .bind(addr, domain, prefix, kind, user.id, useBonus, now)
+      .run();
   } catch (e) {
     if (useBonus) await env.DB.prepare('UPDATE users SET bonus = bonus + 1 WHERE id = ?').bind(user.id).run().catch(() => {});
     throw e;
@@ -406,11 +433,19 @@ export async function handleApi(request, env, url) {
     const bin = atob(row.data);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const inline = url.searchParams.get('inline') === '1' && /^image\//i.test(row.mime || '');
+    // 附件存储型 XSS 防护（对抗复读 C-2）：附件 mime 由发件人控制，旧写法凡 image/*
+    // 都放行 inline，image/svg+xml 内嵌脚本会在本站源下执行。现在 inline 只白名单
+    // 位图（png/jpeg/gif/webp，前端邮件详情的图片预览照常）；SVG 等一律强制下载。
+    // 同时所有附件响应一律加 CSP sandbox + nosniff，纵深兜底。
+    const INLINE_BITMAP = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+    const mimeNorm = String(row.mime || '').split(';')[0].trim().toLowerCase();
+    const inline = url.searchParams.get('inline') === '1' && INLINE_BITMAP.has(mimeNorm);
     return new Response(bytes, {
       headers: {
         'Content-Type': row.mime || 'application/octet-stream',
         'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(row.filename || 'attachment')}`,
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+        'X-Content-Type-Options': 'nosniff',
       },
     });
   }
@@ -476,6 +511,15 @@ export async function handleApi(request, env, url) {
     if (viewer.type === 'user') return err(400, '已登录账号请用「存为邮箱」');
     if (!cfg.guestMode) return err(403, '游客模式已关闭，请先登录');
     const gbody = (await readJson(request)) || {};
+    // 游客建址 IP 上限（对抗复读 C-13）：游客池按域名个数限额是全站共用一池，
+    // 单个 IP 换着前缀/随机领能把池子刷空、还能批量占名。复用 rate_limits 给
+    // 「真正新建」加每 IP 每小时上限（默认 20，站长可在 settings 的
+    // guest_addr_ip_hour 改、0 = 关）；池里已有同名直接复用的不计数、不拦。
+    const gIp = clientIp(request);
+    const gLimit = cfg.guestAddrPerIpHour ?? 20;
+    const gOver = async () => gLimit > 0 && (await ratePeek(db, `guest-addr:${gIp}`, 3600_000)) >= gLimit;
+    const gBump = () => rateBump(db, `guest-addr:${gIp}`, 3600_000);
+    const gLimitErr = () => err(429, `这个网络建地址太频繁了，每小时最多建 ${gLimit} 个，请过一会儿再试`);
     const wantPrefix = String(gbody.prefix || '').trim().toLowerCase();
     if (wantPrefix) {
       // 游客自定义前缀：按政策 g_custom（个数）/ g_minlen（最少位数）执行，与随机共用游客池计数
@@ -495,6 +539,7 @@ export async function handleApi(request, env, url) {
       const quota0 = await quotaMap(env, viewer);
       const usedC = (quota0[domain] || { c: 0, r: 0 }).c;
       if (pol.g_custom > 0 && usedC >= pol.g_custom) return err(403, `游客在 ${domain} 的自定义前缀已达上限 ${pol.g_custom} 个`);
+      if (await gOver()) return gLimitErr();
       try {
         await db
           .prepare('INSERT INTO addresses (address, domain, prefix, kind, owner_id, protected, created_at, last_mail_at) VALUES (?, ?, ?, ?, NULL, 0, ?, 0)')
@@ -503,8 +548,10 @@ export async function handleApi(request, env, url) {
       } catch {
         return err(400, '这个地址刚刚被人抢先建了，换个前缀吧');
       }
+      await gBump();
       return json({ ok: true, address: addr });
     }
+    if (await gOver()) return gLimitErr();
     const quota = await quotaMap(env, viewer);
     for (const pol of cfg.policies) {
       if (!pol.g_open) continue;
@@ -520,6 +567,7 @@ export async function handleApi(request, env, url) {
             .prepare('INSERT INTO addresses (address, domain, prefix, kind, owner_id, protected, created_at, last_mail_at) VALUES (?, ?, ?, ?, NULL, 0, ?, 0)')
             .bind(addr, pol.domain, prefix, 'random', Date.now())
             .run();
+          await gBump();
           return json({ ok: true, address: addr });
         } catch {
           /* 撞名重试 */
@@ -616,16 +664,31 @@ export async function handleApi(request, env, url) {
     const cntRow = await db.prepare('SELECT COUNT(*) AS c FROM users').first();
     const isFirst = (cntRow?.c ?? 0) === 0;
     if (cfg.regMode === 'off' && !isFirst) return err(403, '站长已关闭注册，暂时注册不了');
+    // 注册失败限速（对抗复读 C-37）：此前注册接口没有任何失败计数，按 IP 猜邀请码、
+    // 枚举账号名都畅通无阻。现在按 IP 记失败（复用 rateFail），错 10 次锁 10 分钟；
+    // 首账号（站长冷启动）不计不锁。计数范围：查重命中、邀请码不对/被用完、并发抢注
+    // 冲突。两类不计：格式类校验错误（纯填错）；邮箱验证码不对——验证码本身已有
+    // 「每码 5 次原子上限 + 10 分钟过期 + 发码频控」的更强单点防护，IP 层再叠加只会
+    // 误伤同 IP（公司/校园 NAT）下错码后换新码的正常用户。注册成功后清掉计数。
+    const regLockKey = `reg:${clientIp(request)}`;
+    const regLockedMs = isFirst ? 0 : await rateLocked(db, regLockKey);
+    if (regLockedMs > 0) {
+      return err(429, `注册失败次数过多，请 ${Math.ceil(regLockedMs / 60000)} 分钟后再试`);
+    }
+    const regFail = async (status, message) => {
+      if (!isFirst) await rateFail(db, regLockKey, 10, 10 * 60_000).catch(() => {});
+      return err(status, message);
+    };
     const username = String(body.username || '').trim();
     const password = String(body.password || '');
     const email = String(body.email || '').trim().toLowerCase();
     if (!/^[\w一-龥-]{2,20}$/.test(username)) return err(400, '账号名用 2-20 个字符（中英文、数字、下划线）');
     if (password.length < 8) return err(400, '密码至少 8 位');
     if (!EMAIL_RE.test(email)) return err(400, '注册要填真实邮箱（备份转发和找回都靠它）');
+    // 查重文案合并（C-37 枚举防护）：账号名撞了还是邮箱撞了回同一句，不给枚举留口子
     const dupU = await db.prepare('SELECT id FROM users WHERE username = ?').bind(username).first();
-    if (dupU) return err(400, '这个账号名已被注册');
-    const dupE = await db.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
-    if (dupE) return err(400, '这个邮箱已经注册过账号了，一个邮箱只能注册一个');
+    const dupE = dupU ? null : await db.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
+    if (dupU || dupE) return regFail(400, '账号名或邮箱已被注册');
 
     // 邀请码只留一个输入框：站长发的注册码、或已注册用户的个人邀请码，填哪个都行。
     // 用站长码 = 直接注册，只享后台政策额度；用个人码 = 邀请人记名，注册成功后邀请人加专属额度。
@@ -666,11 +729,11 @@ export async function handleApi(request, env, url) {
               .prepare('UPDATE invites SET left_uses = left_uses - 1 WHERE code = ? AND left_uses > 0')
               .bind(codeIn)
               .run();
-            if (!upd.meta || upd.meta.changes === 0) return err(400, '邀请码刚被用完，找站长再要一个');
+            if (!upd.meta || upd.meta.changes === 0) return regFail(400, '邀请码刚被用完，找站长再要一个');
           }
         } else {
           const inviter = await db.prepare('SELECT id FROM users WHERE invite_code = ?').bind(codeIn).first();
-          if (!inviter) return err(400, '邀请码不对：填站长发的注册码，或已注册朋友的邀请码');
+          if (!inviter) return regFail(400, '邀请码不对：填站长发的注册码，或已注册朋友的邀请码');
           referrerId = Number(inviter.id);
         }
       }
@@ -695,7 +758,7 @@ export async function handleApi(request, env, url) {
             .bind(username, email, pwHash, Date.now())
             .run();
     } catch {
-      return err(400, '这个账号名或邮箱刚被别人抢先注册了，换一个吧');
+      return regFail(400, '这个账号名或邮箱刚被别人抢先注册了，换一个吧');
     }
     if (isFirst && (!ins.meta || ins.meta.changes === 0)) {
       return err(409, '站长账号刚刚已被创建，请刷新后重新注册（将按正常注册流程）');
@@ -710,6 +773,7 @@ export async function handleApi(request, env, url) {
         await db.prepare('UPDATE users SET bonus = bonus + ? WHERE id = ?').bind(cfg.refBonusN, referrerId).run();
       } catch { /* 邀请奖励出问题不挡注册 */ }
     }
+    if (!isFirst) await rateClear(db, regLockKey).catch(() => {});
     const { token, ttlSec } = await createDbSession(db, { userId: newId });
     return json({ ok: true, username, isOwner: !!isOwner }, 200, { 'Set-Cookie': sessionCookie(USER_COOKIE, token, ttlSec) });
   }
@@ -724,7 +788,11 @@ export async function handleApi(request, env, url) {
     const locked = await rateLocked(db, lockKey);
     if (locked > 0) return err(429, `登录失败次数过多，请 ${Math.ceil(locked / 60000)} 分钟后再试`);
     const user = await db.prepare('SELECT * FROM users WHERE username = ?').bind(username).first();
-    const okPw = user && (await verifyPassword(password, user.pw_hash));
+    // 计时拉平（对抗复读 C-38）：账号不存在时也对假哈希跑一次 verifyPassword，
+    // 否则「不存在」瞬间返回、「密码错」要算完 PBKDF2 才返回，耗时差能枚举账号名。
+    let okPw = false;
+    if (user) okPw = await verifyPassword(password, user.pw_hash);
+    else await verifyPassword(password, DUMMY_PW_HASH);
     if (!okPw) {
       await rateFail(db, lockKey, 5, 10 * 60_000);
       return err(401, '账号或密码不正确');

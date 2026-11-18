@@ -30,7 +30,10 @@ export async function handleAdminApi(request, env, url) {
     const lockKey = `admin:${ip}`;
     const locked = await rateLocked(db, lockKey);
     if (locked > 0) return err(429, `登录失败次数过多，请 ${Math.ceil(locked / 60000)} 分钟后再试`);
-    const ok = username === env.ADMIN_USER && (await verifyPassword(password, env.ADMIN_PASSWORD_HASH));
+    // 计时拉平（对抗复读 C-38）：先无条件跑密码校验再比账号名——旧写法账号名不对
+    // 会短路跳过 PBKDF2，响应耗时能分辨账号名对不对。
+    const pwOk = await verifyPassword(password, env.ADMIN_PASSWORD_HASH);
+    const ok = username === env.ADMIN_USER && pwOk;
     if (!ok) {
       await rateFail(db, lockKey, 5, 10 * 60_000);
       return err(401, '管理员账号或密码不正确');

@@ -38,6 +38,10 @@ export async function loadConfig(env, force = false) {
     guestDays: Number(settings.guest_days ?? 1) || 0,
     userCap: Number(settings.user_cap ?? 180) || 0, // 0 = 不限
     idleDays: Number(settings.idle_days ?? 7) || 0, // 0 = 不清理
+    // 防滥用软闸（对抗复读 C-13/C-14）：站长可在 settings 里改，0 = 关掉这道闸
+    guestAddrPerIpHour: (() => { const n = Number(settings.guest_addr_ip_hour ?? 20); return Number.isFinite(n) ? Math.min(10000, Math.max(0, Math.floor(n))) : 20; })(), // 游客建址：每 IP 每小时上限
+    recvAddrHourly: (() => { const n = Number(settings.recv_addr_hourly ?? 100); return Number.isFinite(n) ? Math.min(100000, Math.max(0, Math.floor(n))) : 100; })(), // 收信：同一地址每小时落库上限
+    recvUnclaimedMax: (() => { const n = Number(settings.recv_unclaimed_max ?? 500); return Number.isFinite(n) ? Math.min(1000000, Math.max(0, Math.floor(n))) : 500; })(), // 收信：未认领地址总存量上限
   };
   cacheAt = Date.now();
   return cache;

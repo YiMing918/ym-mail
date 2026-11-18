@@ -81,12 +81,20 @@ export function randomDigits(n) {
 }
 
 export function randomCodePrefix() {
+  // 邀请码随机部分 8 位（对抗复读 C-37，原 5 位）；校验一律查表不看长度，
+  // 以前发出的 5 位旧码照常可用，这里只改新生成的码。
   const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-  const bytes = crypto.getRandomValues(new Uint8Array(5));
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
   let s = 'YM-';
   for (const b of bytes) s += chars[b % chars.length];
   return s;
 }
+
+// 假哈希（对抗复读 C-38）：登录时账号不存在也要对它跑一次 verifyPassword，
+// 把「用户不存在」的响应耗时拉平到和「密码错」一样，堵计时侧信道枚举。
+// 格式与真实哈希一致（PBKDF2 100k、16 字节盐、32 字节哈希，全零填充），
+// 任何密码对它校验都必然不通过。
+export const DUMMY_PW_HASH = 'pbkdf2$100000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
 
 const RND_WORDS = ['mail', 'hi', 'go', 'me', 'vip', 'lab', 'box', 'one', 'sky', 'pro'];
 const RND_CHARS = 'abcdefghjkmnpqrstuvwxyz23456789';

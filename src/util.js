@@ -80,23 +80,32 @@ export async function rateLocked(db, key) {
 
 export async function rateFail(db, key, maxFails, lockMs) {
   const now = Date.now();
-  const row = await db
-    .prepare('SELECT count, updated_at FROM rate_limits WHERE key = ?')
-    .bind(key)
-    .first()
-    .catch(() => null);
-  // 计数窗口 24 小时，过期自动归零
-  let count = row && now - Number(row.updated_at || 0) < DAY_MS ? Number(row.count || 0) : 0;
-  count += 1;
-  const lockUntil = count >= maxFails ? now + lockMs : 0;
-  await db
+  // 单条原子 SQL（对抗复读 C-7）：窗口判断（24 小时过期归零）、+1、按新 count 定锁
+  // 全部在一条 INSERT ... ON CONFLICT ... DO UPDATE 里由数据库完成——旧写法先 SELECT
+  // 再算再写，并发请求会同时读到同一个旧 count 一起过门、落库互相覆盖，计数被放大/丢失。
+  const stmt = db
     .prepare(
-      `INSERT INTO rate_limits (key, count, lock_until, updated_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET count = excluded.count, lock_until = excluded.lock_until, updated_at = excluded.updated_at`
+      `INSERT INTO rate_limits (key, count, lock_until, updated_at)
+       VALUES (?, 1, CASE WHEN 1 >= ? THEN ? ELSE 0 END, ?)
+       ON CONFLICT(key) DO UPDATE SET
+         count = (CASE WHEN excluded.updated_at - rate_limits.updated_at < ? THEN rate_limits.count ELSE 0 END) + 1,
+         lock_until = CASE WHEN ((CASE WHEN excluded.updated_at - rate_limits.updated_at < ? THEN rate_limits.count ELSE 0 END) + 1) >= ?
+                               THEN excluded.updated_at + ? ELSE 0 END,
+         updated_at = excluded.updated_at
+       RETURNING count`
     )
-    .bind(key, count, lockUntil, now)
-    .run();
-  return count;
+    .bind(key, maxFails, now + lockMs, now, DAY_MS, DAY_MS, maxFails, lockMs);
+  // RETURNING 取本条自增后的 count（D1 对 RETURNING 语句用 first()/all() 取行）；
+  // 万一某环境 first() 取不到行，只回退到读一次现值——绝不重跑写语句防双记。
+  let row = null;
+  try {
+    row = await stmt.first();
+  } catch {
+    await stmt.run().catch(() => {});
+  }
+  if (row && row.count !== undefined) return Number(row.count);
+  const after = await db.prepare('SELECT count FROM rate_limits WHERE key = ?').bind(key).first().catch(() => null);
+  return Number(after?.count || 0);
 }
 
 export async function rateClear(db, key) {
@@ -104,8 +113,9 @@ export async function rateClear(db, key) {
 }
 
 // 计数型限额（发信配额用）：看窗口内已用数 / 记一次。用同一张 rate_limits 表、
-// 不同键名，与失败锁定互不干扰。读后写、非强原子（与 rateFail 同口径）——
-// 发信配额是防滥用闸不是安全边界，并发下个位数溢出可接受。
+// 不同键名，与失败锁定互不干扰。ratePeek 是只读查看；rateBump 与 rateFail 一样是
+// 单条原子自增（C-7），并发下不丢计数。发信侧仍是「先 peek 判上限、再 bump」的
+// 防滥用闸，极端并发下个位数溢出可接受（不是安全边界）。
 export async function ratePeek(db, key, windowMs) {
   try {
     const row = await db.prepare('SELECT count, updated_at FROM rate_limits WHERE key = ?').bind(key).first();
@@ -118,13 +128,14 @@ export async function ratePeek(db, key, windowMs) {
 
 export async function rateBump(db, key, windowMs) {
   const now = Date.now();
-  const cur = await ratePeek(db, key, windowMs);
   await db
     .prepare(
-      `INSERT INTO rate_limits (key, count, lock_until, updated_at) VALUES (?, ?, 0, ?)
-       ON CONFLICT(key) DO UPDATE SET count = excluded.count, lock_until = 0, updated_at = excluded.updated_at`
+      `INSERT INTO rate_limits (key, count, lock_until, updated_at) VALUES (?, 1, 0, ?)
+       ON CONFLICT(key) DO UPDATE SET
+         count = (CASE WHEN excluded.updated_at - rate_limits.updated_at < ? THEN rate_limits.count ELSE 0 END) + 1,
+         lock_until = 0, updated_at = excluded.updated_at`
     )
-    .bind(key, cur + 1, now)
+    .bind(key, now, windowMs)
     .run()
     .catch(() => {});
 }

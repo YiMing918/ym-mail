@@ -146,7 +146,27 @@ export default {
         .run();
       addrRow = { owner_id: null, kind: 'random' };
     }
-    const ownerId = addrRow.owner_id ?? null;
+    let ownerId = addrRow.owner_id ?? null;
+
+    // 收信软闸（对抗复读 C-14）：此前收信侧完全不限量，一个地址被刷信能把 D1 写
+    // 额度/存储打满，连带全站收不了信。用一条聚合查询顺带数清（不额外加写）：
+    // 同一地址一小时内落库达上限（默认 100）、或未认领地址总存量达上限（默认 500）
+    // 就静默丢弃——不 setReject，不打扰正常发信方；阈值在 settings 里可调、0 = 关。
+    const recvHourly = cfg.recvAddrHourly ?? 100;
+    const recvUnclaimedMax = cfg.recvUnclaimedMax ?? 500;
+    if (recvHourly > 0 || (ownerId === null && recvUnclaimedMax > 0)) {
+      const cnt = await env.DB.prepare(
+        `SELECT COUNT(*) AS total_n, COALESCE(SUM(CASE WHEN received_at > ? THEN 1 ELSE 0 END), 0) AS hour_n
+         FROM mails WHERE to_addr = ? AND folder = 'inbox'`
+      )
+        .bind(receivedAt - 3600_000, toAddr)
+        .first()
+        .catch(() => null);
+      if (cnt) {
+        if (recvHourly > 0 && Number(cnt.hour_n) >= recvHourly) return;
+        if (ownerId === null && recvUnclaimedMax > 0 && Number(cnt.total_n) >= recvUnclaimedMax) return;
+      }
+    }
 
     // 写库两段式：先插入邮件拿到 id，再把附件内容 + 地址活跃时间用一个 batch 写完
     const insRes = await env.DB.prepare(
@@ -156,6 +176,24 @@ export default {
       .bind(toAddr, ownerId, fromAddr, fromName, subject, textBody, safeHtml, otp, JSON.stringify(attMeta), receivedAt)
       .run();
     const mailId = insRes?.meta?.last_row_id;
+    // 归属对账（对抗复读 C-8）：地址归属是上面读到的快照，若在快照读完到这封信
+    // 落库之间地址刚被用户认领，这封信会带着 owner_id=NULL 掉进公开池（认领的
+    // 迁移只迁当时已有的信）。落库后补查一次地址行现值，不一致就把刚插的这封
+    // 补正给认领者；只对快照为未认领的信多花一读一写（认领是低频事件，且只有
+    // 真被认领走的那一封才触发写），已认领地址的日常收信零额外开销。
+    if (mailId && ownerId === null) {
+      const fresh = await env.DB.prepare('SELECT owner_id FROM addresses WHERE address = ?')
+        .bind(toAddr)
+        .first()
+        .catch(() => null);
+      if (fresh && fresh.owner_id !== null && fresh.owner_id !== undefined) {
+        const fix = await env.DB.prepare('UPDATE mails SET owner_id = ? WHERE id = ? AND owner_id IS NULL')
+          .bind(fresh.owner_id, mailId)
+          .run()
+          .catch(() => null);
+        if (fix && fix.meta && fix.meta.changes > 0) ownerId = fresh.owner_id;
+      }
+    }
     const tail = [];
     if (mailId) {
       for (const a of attStore) {
