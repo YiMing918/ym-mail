@@ -273,6 +273,8 @@ async function guardWrites(request, url, handler) {
   try {
     return await handler();
   } catch (e) {
-    return err(500, `服务器错误：${e.message}`);
+    // 内部异常原文（D1 表名/约束名等实现细节）只进日志，对外只回笼统文案（与 ym-dash 同口径）
+    console.error('guardWrites handler error:', e && e.message ? e.message : e);
+    return err(500, '服务器错误，请稍后再试');
   }
 }

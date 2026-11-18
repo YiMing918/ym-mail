@@ -600,7 +600,10 @@ export async function handleApi(request, env, url) {
       });
     } catch (e) {
       await db.prepare('DELETE FROM reg_codes WHERE id = ?').bind(ins.meta.last_row_id).run().catch(() => {});
-      return err(e instanceof SendError && e.code === 'SEND_NOT_CONFIGURED' ? 501 : 502, e.message);
+      // SendError 的文案是发信层专门写给用户看的，可直接回；非 SendError 的异常原文只进日志
+      if (e instanceof SendError) return err(e.code === 'SEND_NOT_CONFIGURED' ? 501 : 502, e.message);
+      console.error('reg code send error:', e && e.message ? e.message : e);
+      return err(502, '验证码发送失败，请稍后再试');
     }
     return json({ ok: true });
   }
@@ -792,7 +795,10 @@ export async function handleApi(request, env, url) {
     try {
       await sendViaResend(env, { from: `佲 <${from}>`, to, subject, text });
     } catch (e) {
-      return err(e instanceof SendError && e.code === 'SEND_NOT_CONFIGURED' ? 501 : 502, e.message);
+      // 同上：SendError 文案可直接回，非 SendError 异常原文只进日志
+      if (e instanceof SendError) return err(e.code === 'SEND_NOT_CONFIGURED' ? 501 : 502, e.message);
+      console.error('send error:', e && e.message ? e.message : e);
+      return err(502, '发信失败，请稍后再试');
     }
     await db
       .prepare(
