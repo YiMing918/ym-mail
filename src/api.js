@@ -639,9 +639,17 @@ export async function handleApi(request, env, url) {
           .prepare('SELECT * FROM reg_codes WHERE email = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 1')
           .bind(email, Date.now())
           .first();
-        if (!row || row.attempts >= 5) return err(400, '验证码已失效，重新发一个吧');
+        if (!row) return err(400, '验证码已失效，重新发一个吧');
+        // 原子 claim（2026-11-18 审计核验 #5）：先占一次尝试名额再比对。
+        // 旧写法先 SELECT 判 attempts>=5、错了才 +1，并发请求会同时读到
+        // 同一个 attempts 一起过门，5 次上限被放大成 5×并发数。改成单条
+        // 条件 UPDATE 占位（与下方邀请码分支同一范式）：占不到 = 名额已满。
+        const claim = await db
+          .prepare('UPDATE reg_codes SET attempts = attempts + 1 WHERE id = ? AND attempts < 5')
+          .bind(row.id)
+          .run();
+        if (!claim.meta || claim.meta.changes === 0) return err(400, '验证码已失效，重新发一个吧');
         if ((await sha256Hex(code)) !== row.code_hash) {
-          await db.prepare('UPDATE reg_codes SET attempts = attempts + 1 WHERE id = ?').bind(row.id).run();
           return err(400, '验证码不对');
         }
         await db.prepare('DELETE FROM reg_codes WHERE email = ?').bind(email).run();
