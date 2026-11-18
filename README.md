@@ -1,10 +1,8 @@
 # 佲的邮箱 YM Mail
 
-[![版本](https://img.shields.io/badge/版本-v1.0.11-blue)](https://github.com/YiMing918/ym-mail/releases/latest)
-[![Cloudflare](https://img.shields.io/badge/Cloudflare-Workers%20%2F%20D1%20%2F%20Email%20Routing-F38020)](https://developers.cloudflare.com/workers/)
-[![发信](https://img.shields.io/badge/发信-Resend-000000)](https://resend.com/)
-
 多用户域名邮箱系统，跑在 Cloudflare 全免费额度上：**游客不用注册就能用临时邮箱收验证码，注册用户认领地址后锁定私有**，全部规则（谁能用哪个域名、能建几个、能不能删、保留多少天）由站长在独立后台 `/admin` 里定。
+
+[![版本](https://img.shields.io/badge/版本-v1.0.11-blue)](https://github.com/YiMing918/ym-mail/releases/latest) [![Cloudflare](https://img.shields.io/badge/Cloudflare-Workers%20%2F%20D1%20%2F%20Email%20Routing-F38020)](https://developers.cloudflare.com/workers/) [![发信](https://img.shields.io/badge/发信-Resend-000000)](https://resend.com/)
 
 **[打开站点](https://yxa.us.ci/) · [下载最新版](https://github.com/YiMing918/ym-mail/releases/latest) · [博客部署教程（置顶）](https://bk.ymaym.top/post/ym-mail-guide)**
 
