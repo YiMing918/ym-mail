@@ -1,0 +1,60 @@
+name: auto-upgrade
+
+on:
+  schedule:
+    - cron: '20 21 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: auto-upgrade-ym-mail
+  cancel-in-progress: false
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 试升级依赖（锁文件范围内）
+        run: |
+          npm update --no-audit --no-fund
+          npm ci --no-audit --no-fund
+      - name: 跑仓库测试（不过不提交）
+        run: |
+          for f in tests/*.mjs; do node "$f" || exit 1; done
+      - name: 备配置并空跑部署（验工具链）
+        env:
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+        run: |
+          if [ -z "$D1_DATABASE_ID" ]; then echo "::error::未配置 D1_DATABASE_ID（仓库 Secrets），终止"; exit 1; fi
+          cp wrangler.toml.example wrangler.toml
+          ESC=$(printf '%s' "$D1_DATABASE_ID" | sed -e 's/[\&|]/\\&/g')
+          sed -i "s|00000000-0000-0000-0000-000000000000|$ESC|" wrangler.toml
+          grep -qF "$D1_DATABASE_ID" wrangler.toml
+          npx wrangler deploy --dry-run
+      - name: 有升级就提交并触发部署，没升级就留心跳
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DATE=$(TZ=Asia/Shanghai date +%F)
+          echo "last auto-upgrade run: $DATE" > .github/auto-upgrade-heartbeat.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- package.json package-lock.json; then
+            git add .github/auto-upgrade-heartbeat.txt
+            git commit -m "chore: 每周试升级心跳 $DATE [skip ci]"
+            git push
+            echo "本周没有可升级的依赖，已留心跳。"
+          else
+            git add package.json package-lock.json .github/auto-upgrade-heartbeat.txt
+            git commit -m "auto-upgrade: 依赖周更 $DATE（测试全过）"
+            git push
+            gh workflow run deploy.yml --ref main
+            echo "已提交升级并触发正式部署。"
+          fi
