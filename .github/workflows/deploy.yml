@@ -45,10 +45,10 @@ jobs:
           SITE_URL: ${{ vars.SITE_URL }}
         run: |
           if [ -z "$SITE_URL" ]; then
-            echo "未配置仓库变量 SITE_URL，跳过部署后自检：部署本身已经完成，只是没有自动验证；请自己打开你的邮箱前端确认能正常打开（配置方法见 README 方式一）。"
+            echo "未配置仓库变量 SITE_URL，跳过部署后自检：部署本身已经完成，只是没有自动验活；请自己打开你的邮箱站确认能正常打开（配置方法见 README 方式一）。"
             exit 0
           fi
           sleep 10
-          code=$(curl -s -o /dev/null -w '%{http_code}' -A 'Mozilla/5.0' "${SITE_URL}/api/bootstrap")
+          code=$(curl -s -o /dev/null -w '%{http_code}' -A 'Mozilla/5.0' "${SITE_URL%/}/api/bootstrap")
           echo "bootstrap http: $code"
           test "$code" = "200"
