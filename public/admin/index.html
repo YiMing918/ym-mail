@@ -76,7 +76,7 @@
       <div class="gt">清理</div>
       <div class="row" style="border-top:none"><div>游客邮件保留<div class="sub">游客的邮件超过这个天数自动删；填 0 = 不自动删</div></div><input id="inGuestDays" type="number" min="0" max="3650" step="1" inputmode="numeric" style="margin-left:auto;width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:center"><span style="margin-left:8px;color:var(--ink2);font-size:13px">天</span></div>
       <div class="row"><div>注册用户的邮件 · 最长保存<div class="sub">注册用户自己选邮件保存天数时不能超过这个上限；填 0 = 不限。到期自动删，星标不删</div></div><input id="inUserCap" type="number" min="0" max="3650" step="1" inputmode="numeric" style="margin-left:auto;width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:center"><span style="margin-left:8px;color:var(--ink2);font-size:13px">天</span></div>
-      <div class="row"><div>随机地址闲置清理<div class="sub">随机地址多少天没收到新信就连地址带信一起删（从没收到过信的按建立时间算；自定义地址不删，系统清理返还额度）；填 0 = 不清理</div></div><input id="inIdleDays" type="number" min="0" max="3650" step="1" inputmode="numeric" style="margin-left:auto;width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:center"><span style="margin-left:8px;color:var(--ink2);font-size:13px">天</span></div>
+      <div class="row"><div>随机地址闲置清理<div class="sub">没人认领的随机地址多少天没收到新信就连地址带信一起删（从没收到过信的按建立时间算；已被人认领的、自定义的一律不删）；填 0 = 不清理</div></div><input id="inIdleDays" type="number" min="0" max="3650" step="1" inputmode="numeric" style="margin-left:auto;width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:center"><span style="margin-left:8px;color:var(--ink2);font-size:13px">天</span></div>
     </div>
 
     <div class="group">
@@ -106,6 +106,9 @@
           <button class="add hidden" id="delUnused" style="background:#c92a2a;color:#fff">一键删除</button>
         </div>
       </div>
+      <div class="row"><div>游客建地址上限<div class="sub">同一个网络每小时最多新建几个游客地址，防把公共池刷空；填 0 = 不限制</div></div><input id="inGuestAddrIpHour" type="number" min="0" max="10000" step="1" inputmode="numeric" style="margin-left:auto;width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:center"><span style="margin-left:8px;color:var(--ink2);font-size:13px">个/小时</span></div>
+      <div class="row"><div>单地址收信上限<div class="sub">同一个地址每小时最多收多少封，超了悄悄丢弃；填 0 = 不限制</div></div><input id="inRecvAddrHourly" type="number" min="0" max="100000" step="1" inputmode="numeric" style="margin-left:auto;width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:center"><span style="margin-left:8px;color:var(--ink2);font-size:13px">封/小时</span></div>
+      <div class="row"><div>没人认领的总量上限<div class="sub">全站没人认领的地址总数、以及单个没人认领地址能存的信数，任一到这个数就不再收新地址的信（老地址照常）；填 0 = 不限制</div></div><input id="inRecvUnclaimedMax" type="number" min="0" max="1000000" step="1" inputmode="numeric" style="margin-left:auto;width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:8px 10px;font-size:13px;text-align:center"><span style="margin-left:8px;color:var(--ink2);font-size:13px">个</span></div>
       <div class="row"><div>发信通道</div><span class="val">Resend（免费 100 封/天）</span></div>
       <div class="row"><div>运行成本</div><span class="val">¥0 · Cloudflare 免费额度</span></div>
     </div>

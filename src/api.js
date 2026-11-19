@@ -100,8 +100,9 @@ async function listMails(env, viewer, { scope = 'all', filter = 'all', q = '', v
   if (filter === 'star') where.push('m.is_starred = 1');
   if (filter === 'att') where.push("m.attachments <> '[]'");
   if (q) {
-    where.push('(m.subject LIKE ? OR m.from_addr LIKE ? OR m.from_name LIKE ? OR m.text_body LIKE ? OR m.otp LIKE ?)');
-    const like = `%${q}%`;
+    // 审计 L4：用户输入里的 %/_/\ 先转义并配 ESCAPE 子句，否则搜 '%' 会匹配全部
+    where.push("(m.subject LIKE ? ESCAPE '\\' OR m.from_addr LIKE ? ESCAPE '\\' OR m.from_name LIKE ? ESCAPE '\\' OR m.text_body LIKE ? ESCAPE '\\' OR m.otp LIKE ? ESCAPE '\\')");
+    const like = `%${String(q).replace(/[\\%_]/g, '\\$&')}%`;
     binds.push(like, like, like, like, like);
   }
   const whereSql = where.join(' AND ');
@@ -191,6 +192,13 @@ async function ensureInviteCode(db, user) {
   return '';
 }
 
+// 可见性谓词（无别名版，审计 M4 用）：针对 mails 表本行 owner_id
+function visSql(viewer) {
+  return viewer.type === 'user'
+    ? { sql: 'owner_id = ?', binds: [viewer.user.id] }
+    : { sql: 'owner_id IS NULL', binds: [] };
+}
+
 // ---------- 创建 / 认领地址（登录用户） ----------
 async function createOrClaim(env, cfg, user, addrRaw, kind) {
   const addr = String(addrRaw || '').trim().toLowerCase();
@@ -207,11 +215,12 @@ async function createOrClaim(env, cfg, user, addrRaw, kind) {
   if (existing && existing.owner_id === user.id) return { error: [400, '这个邮箱已经有了'] };
   if (existing && existing.owner_id !== null) return { error: [403, '这个地址已被别人认领了'] };
   let useBonus = 0;
+  let limit = -1; // 审计 M3：把 limit 提到外层，新建分支的原子 INSERT 要用它做条件
   if (!user.is_owner) {
     // 个数上限（按目标 kind 的池算，含 tombstone）
     const quota = await quotaMap(env, { type: 'user', user });
     const used = (quota[domain] || { c: 0, r: 0 })[kind === 'custom' ? 'c' : 'r'];
-    const limit = kind === 'custom' ? pol.u_custom : pol.u_random;
+    limit = kind === 'custom' ? pol.u_custom : pol.u_random;
     if (limit === 0) return { error: [403, `站长把这个域名的${kind === 'custom' ? '自定义前缀' : '随机地址'}设为 0 个，建不了`] };
     if (limit > 0 && used >= limit) {
       // 政策额度用满：有专属额度（邀请奖励）就抵 1 个继续建；0 个上限不适用（那是站长关死）
@@ -258,19 +267,41 @@ async function createOrClaim(env, cfg, user, addrRaw, kind) {
     }
     return { address: addr };
   }
-  // 新建地址：地址主键唯一约束兜底并发同名新建；保持原顺序（先原子扣额度、失败退回）
+  // 新建地址（审计 M3 原子化）：旧写法先 quotaMap 读用量判上限、再无条件 INSERT，
+  // 两个并发新建（不同地址）会同时读到同一个 used 一起过门、超发额度。改法：
+  // ① 有政策上限且不用专属额度时，用单条 INSERT…SELECT…WHERE 把「当前用量
+  // （地址数 + tombstone）< 上限」写进插入条件，数据库一步判一步插，changes=0
+  // 就是没抢到名额；② 用专属额度时额度扣减本身已是原子条件 UPDATE（bonus>0
+  // 才扣得动），它就是闸，扣完再插；③ 站长/不限量走普通 INSERT。
+  // 同名并发撞主键唯一约束时不再抛 500，转成「已被认领」友好报错。
+  const isUniqueErr = (e) => /unique|constraint/i.test(String((e && e.message) || e || ''));
   if (useBonus) {
     const dec = await env.DB.prepare('UPDATE users SET bonus = bonus - 1 WHERE id = ? AND bonus > 0').bind(user.id).run();
     if (!dec.meta || dec.meta.changes === 0) return { error: [403, '专属额度刚刚用完了'] };
   }
   try {
-    await env.DB.prepare(
-      'INSERT INTO addresses (address, domain, prefix, kind, owner_id, protected, bonus_used, created_at, last_mail_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0)'
-    )
-      .bind(addr, domain, prefix, kind, user.id, useBonus, now)
-      .run();
+    if (!useBonus && !user.is_owner && limit > 0) {
+      const ins = await env.DB.prepare(
+        `INSERT INTO addresses (address, domain, prefix, kind, owner_id, protected, bonus_used, created_at, last_mail_at)
+         SELECT ?, ?, ?, ?, ?, 0, 0, ?, 0
+         WHERE (SELECT COUNT(*) FROM addresses WHERE owner_id = ? AND domain = ? AND kind = ?)
+             + (SELECT COALESCE(SUM(count), 0) FROM tombstones WHERE owner_key = ? AND domain = ? AND kind = ?) < ?`
+      )
+        .bind(addr, domain, prefix, kind, user.id, now, user.id, domain, kind, `u:${user.id}`, domain, kind, limit)
+        .run();
+      if (!ins.meta || ins.meta.changes === 0) {
+        return { error: [403, `你在 ${domain} 的${kind === 'custom' ? '自定义前缀' : '随机地址'}已达上限 ${limit} 个（后台政策）；邀请好友注册成功可得专属额度，超出上限也能建`] };
+      }
+    } else {
+      await env.DB.prepare(
+        'INSERT INTO addresses (address, domain, prefix, kind, owner_id, protected, bonus_used, created_at, last_mail_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0)'
+      )
+        .bind(addr, domain, prefix, kind, user.id, useBonus, now)
+        .run();
+    }
   } catch (e) {
     if (useBonus) await env.DB.prepare('UPDATE users SET bonus = bonus + 1 WHERE id = ?').bind(user.id).run().catch(() => {});
+    if (isUniqueErr(e)) return { error: [403, '这个地址已被别人认领了'] };
     throw e;
   }
   return { address: addr };
@@ -369,8 +400,12 @@ export async function handleApi(request, env, url) {
   if (path === '/api/mails' && method === 'GET') {
     const gb = guestBlocked();
     if (gb) return gb;
-    const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') || PAGE_SIZE)));
-    const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
+    // 审计 L3：Number('abc') 是 NaN，Math.min/max 带着 NaN 会把 NaN 绑进 LIMIT/OFFSET。
+    // 先 isFinite 守卫，非数字一律回落默认值。
+    const rawLimit = Number(url.searchParams.get('limit'));
+    const rawOffset = Number(url.searchParams.get('offset'));
+    const limit = Math.min(50, Math.max(1, Number.isFinite(rawLimit) && rawLimit > 0 ? Math.floor(rawLimit) : PAGE_SIZE));
+    const offset = Math.max(0, Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0);
     const page = await listMails(env, viewer, {
       scope: url.searchParams.get('scope') || 'all',
       filter: url.searchParams.get('filter') || 'all',
@@ -411,11 +446,13 @@ export async function handleApi(request, env, url) {
     const vis = visFrag(viewer);
     const ph = ids.map(() => '?').join(',');
     const sel = `SELECT id FROM mails m WHERE ${vis.sql} AND m.id IN (${ph})`;
-    await db.batch([
+    const batchRes = await db.batch([
       db.prepare(`DELETE FROM attachments WHERE mail_id IN (${sel})`).bind(...vis.binds, ...ids),
       db.prepare(`DELETE FROM mails WHERE id IN (${sel})`).bind(...vis.binds, ...ids),
     ]);
-    return json({ ok: true, deleted: ids.length });
+    // 审计 L18：按第二条（删邮件本体）的实际 changes 回数，不可见/已删的 id 不计数
+    const deleted = Number(batchRes?.[1]?.meta?.changes ?? ids.length);
+    return json({ ok: true, deleted });
   }
 
   // ── 邮件详情 / 星标 / 删除 / 附件 ──
@@ -423,27 +460,34 @@ export async function handleApi(request, env, url) {
   if (attMatch && method === 'GET') {
     const gb = guestBlocked();
     if (gb) return gb;
-    const mail = await db.prepare('SELECT owner_id FROM mails WHERE id = ?').bind(Number(attMatch[1])).first();
-    if (!mailVisible(viewer, mail)) return err(404, '附件不存在');
-    const row = await db
-      .prepare('SELECT filename, mime, data FROM attachments WHERE mail_id = ? AND idx = ?')
-      .bind(Number(attMatch[1]), Number(attMatch[2]))
+    // 审计 M4：附件查询直接 JOIN mails 并带归属谓词，不再「先 SELECT 归属、
+    // 再按 mail_id 裸查附件」——归属变更窗口内按旧快照取他人附件的缝没了。
+    const visA = viewer.type === 'user'
+      ? { sql: 'm.owner_id = ?', binds: [viewer.user.id] }
+      : { sql: 'm.owner_id IS NULL', binds: [] };
+    const row2 = await db
+      .prepare(`SELECT a.filename, a.mime, a.data FROM attachments a JOIN mails m ON m.id = a.mail_id WHERE a.mail_id = ? AND a.idx = ? AND ${visA.sql}`)
+      .bind(Number(attMatch[1]), Number(attMatch[2]), ...visA.binds)
       .first();
-    if (!row) return err(404, '附件不存在或过大未保存');
-    const bin = atob(row.data);
+    if (!row2) return err(404, '附件不存在');
+    const bin = atob(row2.data);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     // 附件存储型 XSS 防护（对抗复读 C-2）：附件 mime 由发件人控制，旧写法凡 image/*
     // 都放行 inline，image/svg+xml 内嵌脚本会在本站源下执行。现在 inline 只白名单
     // 位图（png/jpeg/gif/webp，前端邮件详情的图片预览照常）；SVG 等一律强制下载。
     // 同时所有附件响应一律加 CSP sandbox + nosniff，纵深兜底。
+    // 审计 L1：响应 Content-Type 也白名单化——旧写法直接回发件人可控的 row.mime
+    // 原值（可含怪字符/注入头），现在只回白名单内的规范类型，其余一律 octet-stream。
     const INLINE_BITMAP = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
-    const mimeNorm = String(row.mime || '').split(';')[0].trim().toLowerCase();
+    const SAFE_TYPES = new Set([...INLINE_BITMAP, 'application/pdf', 'text/plain']);
+    const mimeNorm = String(row2.mime || '').split(';')[0].trim().toLowerCase();
+    const safeType = SAFE_TYPES.has(mimeNorm) ? mimeNorm : 'application/octet-stream';
     const inline = url.searchParams.get('inline') === '1' && INLINE_BITMAP.has(mimeNorm);
     return new Response(bytes, {
       headers: {
-        'Content-Type': row.mime || 'application/octet-stream',
-        'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(row.filename || 'attachment')}`,
+        'Content-Type': safeType,
+        'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(row2.filename || 'attachment')}`,
         'Content-Security-Policy': "default-src 'none'; sandbox",
         'X-Content-Type-Options': 'nosniff',
       },
@@ -453,10 +497,14 @@ export async function handleApi(request, env, url) {
   if (starMatch && method === 'POST') {
     const gb = guestBlocked();
     if (gb) return gb;
-    const mail = await db.prepare('SELECT owner_id FROM mails WHERE id = ?').bind(Number(starMatch[1])).first();
-    if (!mailVisible(viewer, mail)) return err(404, '邮件不存在');
     const body = (await readJson(request)) || {};
-    await db.prepare('UPDATE mails SET is_starred = ? WHERE id = ?').bind(body.starred ? 1 : 0, Number(starMatch[1])).run();
+    // 审计 M4：UPDATE 直接带归属谓词并按 changes 判成败，不再先 SELECT 快照再裸 UPDATE
+    const visS = visSql(viewer);
+    const upd = await db
+      .prepare(`UPDATE mails SET is_starred = ? WHERE id = ? AND ${visS.sql}`)
+      .bind(body.starred ? 1 : 0, Number(starMatch[1]), ...visS.binds)
+      .run();
+    if (!upd.meta || upd.meta.changes === 0) return err(404, '邮件不存在');
     return json({ ok: true, starred: !!body.starred });
   }
   const detailMatch = path.match(/^\/api\/mails\/(\d+)$/);
@@ -466,7 +514,8 @@ export async function handleApi(request, env, url) {
     const row = await db.prepare('SELECT * FROM mails WHERE id = ?').bind(Number(detailMatch[1])).first();
     if (!mailVisible(viewer, row)) return err(404, '邮件不存在');
     if (!row.is_read) {
-      await db.prepare('UPDATE mails SET is_read = 1 WHERE id = ?').bind(row.id).run();
+      const visD = visSql(viewer);
+      await db.prepare(`UPDATE mails SET is_read = 1 WHERE id = ? AND ${visD.sql}`).bind(row.id, ...visD.binds).run();
       row.is_read = 1;
     }
     let atts = [];
@@ -485,12 +534,14 @@ export async function handleApi(request, env, url) {
   if (detailMatch && method === 'DELETE') {
     const gb = guestBlocked();
     if (gb) return gb;
-    const mail = await db.prepare('SELECT owner_id FROM mails WHERE id = ?').bind(Number(detailMatch[1])).first();
-    if (!mailVisible(viewer, mail)) return err(404, '邮件不存在');
-    await db.batch([
-      db.prepare('DELETE FROM attachments WHERE mail_id = ?').bind(Number(detailMatch[1])),
-      db.prepare('DELETE FROM mails WHERE id = ?').bind(Number(detailMatch[1])),
+    // 审计 M4：两条 DELETE 都带归属谓词（附件删除走带可见性子查询），归属在
+    // 检查后被认领走的邮件不会被旧访客顺手删掉；按删邮件本体的 changes 判存在
+    const visDel = visFrag(viewer);
+    const delRes = await db.batch([
+      db.prepare(`DELETE FROM attachments WHERE mail_id IN (SELECT id FROM mails m WHERE ${visDel.sql} AND m.id = ?)`).bind(...visDel.binds, Number(detailMatch[1])),
+      db.prepare(`DELETE FROM mails WHERE id IN (SELECT id FROM mails m WHERE ${visDel.sql} AND m.id = ?)`).bind(...visDel.binds, Number(detailMatch[1])),
     ]);
+    if (Number(delRes?.[1]?.meta?.changes ?? 1) === 0) return err(404, '邮件不存在');
     return json({ ok: true });
   }
 
@@ -683,7 +734,9 @@ export async function handleApi(request, env, url) {
     const password = String(body.password || '');
     const email = String(body.email || '').trim().toLowerCase();
     if (!/^[\w一-龥-]{2,20}$/.test(username)) return err(400, '账号名用 2-20 个字符（中英文、数字、下划线）');
+    // 审计 L2：密码加长度上限——超长密码直入 PBKDF2 100k 迭代纯属白耗算力
     if (password.length < 8) return err(400, '密码至少 8 位');
+    if (password.length > 128) return err(400, '密码最多 128 位');
     if (!EMAIL_RE.test(email)) return err(400, '注册要填真实邮箱（备份转发和找回都靠它）');
     // 查重文案合并（C-37 枚举防护）：账号名撞了还是邮箱撞了回同一句，不给枚举留口子
     const dupU = await db.prepare('SELECT id FROM users WHERE username = ?').bind(username).first();
@@ -746,19 +799,43 @@ export async function handleApi(request, env, url) {
     // （WHERE NOT EXISTS）——单条语句在 D1/SQLite 里原子执行，后到者 changes=0，
     // 回 409 让它刷新后走正常注册流程。产品行为不变：第一个账号仍是站长、仍免门槛，
     // 单人注册路径零变化。普通路径保留原 INSERT，唯一约束冲突转成友好报错。
+    // 审计 M5（低风险收口）：记住这个邮箱验没验过——邮箱验证码模式与首账号
+    // 算已验证（1），邀请码模式没验邮箱、记 0；未验证邮箱不开备份转发抄送
+    // （收信侧与个人设置各有一道闸）。email_verified 是后加的列：老库还没
+    // 迁移时带列 INSERT 会报「无此列」，这时自动退回不带列的旧 INSERT，
+    // 注册绝不能因为没迁移就坏掉（迁移 SQL 见 README 更新日志）。
+    const emailVerified = isFirst || cfg.regMode === 'email' ? 1 : 0;
     let ins;
-    try {
-      ins = isFirst
-        ? await db
-            .prepare('INSERT INTO users (username, email, pw_hash, is_owner, created_at) SELECT ?, ?, ?, 1, ? WHERE NOT EXISTS (SELECT 1 FROM users)')
-            .bind(username, email, pwHash, Date.now())
+    const doInsert = (withVerified) =>
+      isFirst
+        ? db
+            .prepare(
+              withVerified
+                ? 'INSERT INTO users (username, email, pw_hash, is_owner, email_verified, created_at) SELECT ?, ?, ?, 1, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)'
+                : 'INSERT INTO users (username, email, pw_hash, is_owner, created_at) SELECT ?, ?, ?, 1, ? WHERE NOT EXISTS (SELECT 1 FROM users)'
+            )
+            .bind(...(withVerified ? [username, email, pwHash, emailVerified, Date.now()] : [username, email, pwHash, Date.now()]))
             .run()
-        : await db
-            .prepare('INSERT INTO users (username, email, pw_hash, is_owner, created_at) VALUES (?, ?, ?, 0, ?)')
-            .bind(username, email, pwHash, Date.now())
+        : db
+            .prepare(
+              withVerified
+                ? 'INSERT INTO users (username, email, pw_hash, is_owner, email_verified, created_at) VALUES (?, ?, ?, 0, ?, ?)'
+                : 'INSERT INTO users (username, email, pw_hash, is_owner, created_at) VALUES (?, ?, ?, 0, ?)'
+            )
+            .bind(...(withVerified ? [username, email, pwHash, emailVerified, Date.now()] : [username, email, pwHash, Date.now()]))
             .run();
-    } catch {
-      return regFail(400, '这个账号名或邮箱刚被别人抢先注册了，换一个吧');
+    try {
+      ins = await doInsert(true);
+    } catch (e) {
+      if (/email_verified|no such column/i.test(String((e && e.message) || e || ''))) {
+        try {
+          ins = await doInsert(false);
+        } catch {
+          return regFail(400, '这个账号名或邮箱刚被别人抢先注册了，换一个吧');
+        }
+      } else {
+        return regFail(400, '这个账号名或邮箱刚被别人抢先注册了，换一个吧');
+      }
     }
     if (isFirst && (!ins.meta || ins.meta.changes === 0)) {
       return err(409, '站长账号刚刚已被创建，请刷新后重新注册（将按正常注册流程）');
@@ -787,6 +864,11 @@ export async function handleApi(request, env, url) {
     const lockKey = `login:${ip}:${username.toLowerCase()}`;
     const locked = await rateLocked(db, lockKey);
     if (locked > 0) return err(429, `登录失败次数过多，请 ${Math.ceil(locked / 60000)} 分钟后再试`);
+    // 审计 L2：超长密码不进 PBKDF2（注册上限 128，登录同口径），按密码错处理并计数
+    if (password.length > 128) {
+      await rateFail(db, lockKey, 5, 10 * 60_000);
+      return err(401, '账号或密码不正确');
+    }
     const user = await db.prepare('SELECT * FROM users WHERE username = ?').bind(username).first();
     // 计时拉平（对抗复读 C-38）：账号不存在时也对假哈希跑一次 verifyPassword，
     // 否则「不存在」瞬间返回、「密码错」要算完 PBKDF2 才返回，耗时差能枚举账号名。
@@ -832,6 +914,12 @@ export async function handleApi(request, env, url) {
       vals.push(body.tg_chat_id.trim().slice(0, 32));
     }
     if (typeof body.forward_backup === 'boolean') {
+      // 审计 M5：注册邮箱没验过的账号（邀请码注册）不许开备份转发，防冒用
+      // 他人邮箱注册后把信抄送灌进那个邮箱。email_verified 字段不存在（老库
+      // 未迁移）时值为 undefined，不拦（存量账号照常）。
+      if (body.forward_backup && u.email_verified === 0) {
+        return err(403, '你的注册邮箱还没有验证过（邀请码注册），暂时不能开备份转发');
+      }
       sets.push('forward_backup = ?');
       vals.push(body.forward_backup ? 1 : 0);
     }

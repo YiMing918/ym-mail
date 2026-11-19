@@ -30,6 +30,11 @@ export async function handleAdminApi(request, env, url) {
     const lockKey = `admin:${ip}`;
     const locked = await rateLocked(db, lockKey);
     if (locked > 0) return err(429, `登录失败次数过多，请 ${Math.ceil(locked / 60000)} 分钟后再试`);
+    // 审计 L2：超长密码不进 PBKDF2，按登录失败处理并计数（与前台登录同口径）
+    if (password.length > 128) {
+      await rateFail(db, lockKey, 5, 10 * 60_000);
+      return err(401, '管理员账号或密码不正确');
+    }
     // 计时拉平（对抗复读 C-38）：先无条件跑密码校验再比账号名——旧写法账号名不对
     // 会短路跳过 PBKDF2，响应耗时能分辨账号名对不对。
     const pwOk = await verifyPassword(password, env.ADMIN_PASSWORD_HASH);
@@ -55,12 +60,16 @@ export async function handleAdminApi(request, env, url) {
 
   // ── 后台首屏打包 ──
   if (path === '/api/admin/bootstrap' && method === 'GET') {
-    const dayStart = new Date();
-    dayStart.setHours(0, 0, 0, 0);
+    // 审计 L11：「今日」按北京时间（UTC+8）零点算。Workers 运行时是 UTC，
+    // 旧写法 setHours(0,0,0,0) 取的是 UTC 零点 = 北京早上 8 点，统计错位 8 小时。
+    // 做法：把当前时刻平移到 +8 后取 UTC 零点，再平移回来。
+    const bjNow = new Date(Date.now() + 8 * 3600_000);
+    bjNow.setUTCHours(0, 0, 0, 0);
+    const dayStartMs = bjNow.getTime() - 8 * 3600_000;
     const [users, addrs, today, invites, bl, ban] = await db.batch([
       db.prepare('SELECT COUNT(*) AS c FROM users'),
       db.prepare('SELECT COUNT(*) AS c FROM addresses'),
-      db.prepare("SELECT COUNT(*) AS c FROM mails WHERE folder = 'inbox' AND received_at >= ?").bind(dayStart.getTime()),
+      db.prepare("SELECT COUNT(*) AS c FROM mails WHERE folder = 'inbox' AND received_at >= ?").bind(dayStartMs),
       db.prepare('SELECT code, left_uses, created_at FROM invites ORDER BY created_at DESC LIMIT 100'),
       db.prepare('SELECT pattern FROM blacklist ORDER BY pattern'),
       db.prepare('SELECT address FROM banned ORDER BY address'),
@@ -82,6 +91,10 @@ export async function handleAdminApi(request, env, url) {
         ref_bonus: cfg.refBonus,
         ref_bonus_n: cfg.refBonusN,
         mail_from: cfg.settings.mail_from || '',
+        // 审计 M8：三个防刷闸此前只在 config 里有、后台管不到，现一并下发
+        guest_addr_ip_hour: cfg.guestAddrPerIpHour,
+        recv_addr_hourly: cfg.recvAddrHourly,
+        recv_unclaimed_max: cfg.recvUnclaimedMax,
       },
       policies: cfg.policies.map(policyForClient),
       invites: (invites.results || []).map((r) => ({ code: r.code, left: Number(r.left_uses) })),
@@ -118,6 +131,19 @@ export async function handleAdminApi(request, env, url) {
       if (typeof body[k] === 'number') {
         const v = Math.floor(body[k]);
         if (v < min || v > max) return err(400, `${k} 取值不对`);
+        await setSetting(env, k, String(v));
+      }
+    }
+    // 审计 M8：三个防刷闸补进后台设置（范围与 config.js 的夹取口径一致，0 = 关掉这道闸）
+    const gateKeys = [
+      ['guest_addr_ip_hour', 0, 10000, '游客建地址每 IP 每小时上限'],
+      ['recv_addr_hourly', 0, 100000, '同一地址每小时收信上限'],
+      ['recv_unclaimed_max', 0, 1000000, '未认领总量上限'],
+    ];
+    for (const [k, min, max, label] of gateKeys) {
+      if (typeof body[k] === 'number') {
+        const v = Math.floor(body[k]);
+        if (v < min || v > max) return err(400, `${label}取值不对（${min} 到 ${max}）`);
         await setSetting(env, k, String(v));
       }
     }

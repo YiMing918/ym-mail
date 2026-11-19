@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
   tg_chat_id     TEXT NOT NULL DEFAULT '',      -- 自己的 Telegram chat id（与站长 bot 配合用）
   forward_backup INTEGER NOT NULL DEFAULT 0,    -- 备份转发开关：新信抄送一份到 email
   is_owner       INTEGER NOT NULL DEFAULT 0,    -- 站长账号：不受个数/位数政策限制；首个注册账号自动置 1
+  email_verified INTEGER NOT NULL DEFAULT 0,    -- 注册邮箱验过没：邮箱验证码/首账号 = 1，邀请码注册 = 0（未验不开备份转发，审计 M5）；注册代码永远显式写此列，默认值只兜底。老库迁移：ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 1（存量账号按已验证 grandfather，避免误伤已在用转发的人）
   bonus          INTEGER NOT NULL DEFAULT 0,    -- 专属额度（邀请奖励：邀请一人 +3，在域名政策上限之外叠加，建地址超额时抵用）
   invite_code    TEXT NOT NULL DEFAULT '',      -- 个人邀请码（别人注册时填它，奖励发给本人）
   created_at     INTEGER NOT NULL

@@ -416,6 +416,9 @@ async function loadAdmin(){
   $('inGuestDays').value = SETTINGS.guest_days;
   $('inUserCap').value = SETTINGS.user_cap;
   $('inIdleDays').value = SETTINGS.idle_days;
+  if ($('inGuestAddrIpHour')) $('inGuestAddrIpHour').value = SETTINGS.guest_addr_ip_hour == null ? 20 : SETTINGS.guest_addr_ip_hour;
+  if ($('inRecvAddrHourly')) $('inRecvAddrHourly').value = SETTINGS.recv_addr_hourly == null ? 100 : SETTINGS.recv_addr_hourly;
+  if ($('inRecvUnclaimedMax')) $('inRecvUnclaimedMax').value = SETTINGS.recv_unclaimed_max == null ? 500 : SETTINGS.recv_unclaimed_max;
   renderPolicies(); renderInvites(); renderGuard();
 }
 function showAdmin(){
@@ -440,6 +443,19 @@ $('admBack').addEventListener('click', function(){ window.location.href = '/'; }
 bindDayInput('inGuestDays', 'guest_days', '游客邮件保留：', '不自动删');
 bindDayInput('inUserCap', 'user_cap', '注册用户最长保留：', '不限');
 bindDayInput('inIdleDays', 'idle_days', '随机地址闲置清理：', '不清理');
+/* 防刷闸三个数（审计 M8 补：此前后台管不到这三个数） */
+function bindGateInput(id, key, label, max){
+  var el = $(id); if(!el) return;
+  el.addEventListener('change', function(){
+    var v = String(this.value).trim();
+    if(!/^\d+$/.test(v) || Number(v) > max){ toast(label + '填 0 到 ' + max + ' 的整数'); loadAdmin(); return; }
+    var patch = {}; patch[key] = Number(v);
+    saveSettings(patch, label + (Number(v)===0 ? '不限制' : v));
+  });
+}
+bindGateInput('inGuestAddrIpHour', 'guest_addr_ip_hour', '游客建地址上限：', 10000);
+bindGateInput('inRecvAddrHourly', 'recv_addr_hourly', '单地址收信上限：', 100000);
+bindGateInput('inRecvUnclaimedMax', 'recv_unclaimed_max', '没人认领的总量上限：', 1000000);
 
 /* 已有管理员会话时直接进后台 */
 loadAdmin().then(showAdmin).catch(function(){ /* 未登录，停在登录页 */ });

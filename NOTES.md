@@ -6,7 +6,7 @@
 
 | 模块 | 状态 |
 |---|---|
-| schema.sql（13 张表） | ✅ 本地执行成功 |
+| schema.sql（14 张表） | ✅ 本地执行成功 |
 | 前台 SPA（public/index.html + app.js） | ✅ 与预览 C 同视觉/文案/交互，全部改调真实 API |
 | 后台（public/admin/ + admin.js） | ✅ 独立登录、政策/开关/清理/防护/邀请码全接真实 API |
 | 用户 API（src/api.js） | ✅ 实测：bootstrap 打包、check、列表/详情/星标/多选删、地址创建/认领/删除、游客随机地址、注册（邀请码）、登录锁定、个人设置、发信未配置时 501 |

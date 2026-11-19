@@ -10,7 +10,7 @@ function toast(msg){ var el=$('toast'); el.textContent=msg; el.classList.add('sh
 function copy(t){ if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(t).then(function(){toast('已复制：'+t);},function(){toast(t);}); } else toast(t); }
 var COLORS = ['#e8590c','#1971c2','#2f9e44','#9c36b5','#e64980','#0c8599','#f08c00','#5f3dc4'];
 function colorOf(name){ var s=0; for(var i=0;i<name.length;i++) s+=name.charCodeAt(i); return COLORS[s%COLORS.length]; }
-function initialOf(name){ return /[一-龥]/.test(name[0]) ? name[0] : name[0].toUpperCase(); }
+function initialOf(name){ var s = String(name == null ? '' : name); if(!s) return '?'; return /[一-龥]/.test(s[0]) ? s[0] : s[0].toUpperCase(); }
 function ago(t){ var m=Math.floor((Date.now()-t)/60000); if(m<1) return '刚刚'; if(m<60) return m+' 分钟前'; var h=Math.floor(m/60); if(h<24) return h+' 小时前'; return Math.floor(h/24)+' 天前'; }
 function clock(t){ var d=new Date(t), n=new Date(); return d.toDateString()===n.toDateString() ? d.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}) : (d.getMonth()+1)+'/'+d.getDate(); }
 function domOf(addr){ var i = String(addr||'').lastIndexOf('@'); return i<0 ? '' : String(addr).slice(i+1); }

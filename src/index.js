@@ -39,22 +39,47 @@ async function pushTelegram(env, cfg, mail, owner) {
   }
 }
 
+// ---------- 全站安全头（审计 M10） ----------
+// 此前全站没有统一安全头，只有附件响应自带 CSP/nosniff。现在 fetch 出口
+// 统一补：nosniff、Referrer-Policy、X-Frame-Options 与一条克制的 CSP。
+// CSP 按本站实际用法定的：脚本/样式只许同源外链文件（页面无内联 <script>，
+// 但有大量 style 属性，故 style-src 带 'unsafe-inline' 只放行样式属性、
+// 不放行脚本）；图片放行 data:/https:（邮件里远程图片与内嵌图要显示）；
+// frame-ancestors 'none' 防本站被别站嵌套钓鱼。已有更严 CSP 的响应
+// （附件的 default-src 'none'; sandbox）不覆盖。
+const SITE_CSP =
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+  "img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; " +
+  "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+function withSecurityHeaders(resp) {
+  try {
+    const out = new Response(resp.body, resp);
+    if (!out.headers.has('X-Content-Type-Options')) out.headers.set('X-Content-Type-Options', 'nosniff');
+    if (!out.headers.has('Referrer-Policy')) out.headers.set('Referrer-Policy', 'same-origin');
+    if (!out.headers.has('X-Frame-Options')) out.headers.set('X-Frame-Options', 'DENY');
+    if (!out.headers.has('Content-Security-Policy')) out.headers.set('Content-Security-Policy', SITE_CSP);
+    return out;
+  } catch {
+    return resp;
+  }
+}
+
 // ---------- Worker 入口 ----------
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === '/admin' || url.pathname === '/admin/') {
       // 后台页在 public/admin/index.html；经 ASSETS 取带斜杠的路径，避免 .html 跳转来回绕
-      return env.ASSETS.fetch(new Request(new URL('/admin/', url.origin), request));
+      return withSecurityHeaders(await env.ASSETS.fetch(new Request(new URL('/admin/', url.origin), request)));
     }
     if (url.pathname.startsWith('/api/admin/')) {
-      return guardWrites(request, url, () => handleAdminApi(request, env, url));
+      return withSecurityHeaders(await guardWrites(request, url, () => handleAdminApi(request, env, url)));
     }
     if (url.pathname.startsWith('/api/')) {
-      return guardWrites(request, url, () => handleApi(request, env, url));
+      return withSecurityHeaders(await guardWrites(request, url, () => handleApi(request, env, url)));
     }
     // 非 API 路径全部交给静态资源（wrangler [assets]，不消耗 Worker 请求额度的方式托管）
-    return env.ASSETS.fetch(request);
+    return withSecurityHeaders(await env.ASSETS.fetch(request));
   },
 
   // Email Routing catch-all 把邮件转发到这里
@@ -136,22 +161,18 @@ export default {
     const safeHtml = truncateBody(htmlBody, true);
     const receivedAt = Date.now();
 
-    // 地址行：存在则用它的归属；不存在（外部直投）自动建一行未认领的随机类地址
+    // 地址行：存在则用它的归属；不存在（外部直投）要自动建一行未认领的随机类
+    // 地址——但建址必须排在全部软闸之后（审计高危 B2 修复）：旧写法先建址再
+    // 过单地址闸，攻击者换着新地址直投，每封信都新建一行地址、单地址计数恒
+    // 为 0，D1 被无限建址耗尽。现在顺序是：先过单地址闸 → 再过全站闸 → 才建址。
     let addrRow = await env.DB.prepare('SELECT * FROM addresses WHERE address = ?').bind(toAddr).first();
-    if (!addrRow) {
-      await env.DB.prepare(
-        'INSERT OR IGNORE INTO addresses (address, domain, prefix, kind, owner_id, protected, created_at, last_mail_at) VALUES (?, ?, ?, ?, NULL, 0, ?, ?)'
-      )
-        .bind(toAddr, domain, toAddr.slice(0, toAddr.lastIndexOf('@')), 'random', receivedAt, receivedAt)
-        .run();
-      addrRow = { owner_id: null, kind: 'random' };
-    }
-    let ownerId = addrRow.owner_id ?? null;
+    let ownerId = addrRow ? (addrRow.owner_id ?? null) : null;
 
-    // 收信软闸（对抗复读 C-14）：此前收信侧完全不限量，一个地址被刷信能把 D1 写
+    // 收信软闸（对抗复读 C-14 + 审计 B2）：此前收信侧完全不限量，一个地址被刷信能把 D1 写
     // 额度/存储打满，连带全站收不了信。用一条聚合查询顺带数清（不额外加写）：
-    // 同一地址一小时内落库达上限（默认 100）、或未认领地址总存量达上限（默认 500）
+    // 同一地址一小时内落库达上限（默认 100）、或未认领单地址存信达上限（默认 500）
     // 就静默丢弃——不 setReject，不打扰正常发信方；阈值在 settings 里可调、0 = 关。
+    // 单地址闸只看 mails 表（按 to_addr 数），地址行还没建时同样生效。
     const recvHourly = cfg.recvAddrHourly ?? 100;
     const recvUnclaimedMax = cfg.recvUnclaimedMax ?? 500;
     if (recvHourly > 0 || (ownerId === null && recvUnclaimedMax > 0)) {
@@ -166,6 +187,26 @@ export default {
         if (recvHourly > 0 && Number(cnt.hour_n) >= recvHourly) return;
         if (ownerId === null && recvUnclaimedMax > 0 && Number(cnt.total_n) >= recvUnclaimedMax) return;
       }
+    }
+
+    if (!addrRow) {
+      // 全站未认领总量闸（审计 B2）：全站未认领地址总数达到上限（默认 500，
+      // 与单地址存信上限共用 recv_unclaimed_max 设置）时，对「新地址」静默
+      // 丢弃、不再建新行；老地址（已建行）照常收信，不受这道闸影响。这道闸
+      // 同时兜住审计 M9：入站直投自动建的地址不再无限占游客共用池。
+      if (recvUnclaimedMax > 0) {
+        const g = await env.DB.prepare('SELECT COUNT(*) AS c FROM addresses WHERE owner_id IS NULL')
+          .first()
+          .catch(() => null);
+        if (g && Number(g.c) >= recvUnclaimedMax) return;
+      }
+      await env.DB.prepare(
+        'INSERT OR IGNORE INTO addresses (address, domain, prefix, kind, owner_id, protected, created_at, last_mail_at) VALUES (?, ?, ?, ?, NULL, 0, ?, ?)'
+      )
+        .bind(toAddr, domain, toAddr.slice(0, toAddr.lastIndexOf('@')), 'random', receivedAt, receivedAt)
+        .run();
+      addrRow = { owner_id: null, kind: 'random' };
+      ownerId = null;
     }
 
     // 写库两段式：先插入邮件拿到 id，再把附件内容 + 地址活跃时间用一个 batch 写完
@@ -215,7 +256,10 @@ export default {
     ctx.waitUntil(pushTelegram(env, cfg, mail, owner));
     // 备份转发：抄送一份到归属者注册邮箱（该地址需先在 Email Routing 里验证为目标地址；
     // 失败只记日志，绝不影响入库）
-    if (owner && owner.forward_backup && owner.email) {
+    // 审计 M5 低风险收口：注册邮箱没验过的账号（邀请码注册、email_verified=0）
+    // 不抄送——防冒用他人邮箱注册后把信往那个邮箱灌。字段不存在（老库未迁
+    // 移）时值为 undefined、照常转发（存量账号不受影响）；迁移办法见 README。
+    if (owner && owner.forward_backup && owner.email && owner.email_verified !== 0) {
       try {
         await message.forward(owner.email);
       } catch (e) {
@@ -265,9 +309,14 @@ export default {
     // 3) 随机地址闲置清理：连地址带信一起删，额度自然返还（不写 tombstone）；自定义地址不删
     //    「闲置」两种都算：收到过信的按最后一封信的时间算；从没收到过信的按建立时间算
     //    ——否则领了不用的随机地址永远删不掉，只攒不减白占地方。
+    //    审计 M1 修复：谓词加 owner_id IS NULL——只清未认领的随机地址。旧谓词
+    //    不看认领状态，已被注册用户认领的随机地址闲置满期会连星标信一起删，
+    //    与「已认领/自定义地址永不被闲置清理删」的产品口径打架。加上这条后，
+    //    下方专属额度退还语句对闲置清理自然变成空转（已认领地址不再进清理集），
+    //    保留语句不删，避免改动批次结构。
     if (cfg.idleDays > 0) {
       const cutoff = now - cfg.idleDays * dayMs;
-      const idlePred = "kind = 'random' AND ((last_mail_at > 0 AND last_mail_at < ?) OR (last_mail_at = 0 AND created_at < ?))";
+      const idlePred = "kind = 'random' AND owner_id IS NULL AND ((last_mail_at > 0 AND last_mail_at < ?) OR (last_mail_at = 0 AND created_at < ?))";
       const idleSel = `SELECT address FROM addresses WHERE ${idlePred}`;
       // 用专属额度建的随机地址被系统清理：专属额度退回主人（系统清理返还，与用户自删的政策开关无关）
       stmts.push(

@@ -52,13 +52,17 @@ export const PREFIX_RE = /^[a-z0-9][a-z0-9._-]{0,30}$/;
 export const DOMAIN_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 
 // 发件黑名单匹配：条目是完整邮箱 → 等值；以 @ 开头 → 发件域名后缀匹配
+// 审计 M2 修复：p 是带 @ 的 '@evil.com'，而 domOf 的结果永不含 @，旧写法
+// dom.endsWith(p) 恒为假、子域名永远拦不住。改成点号边界匹配：域名本身
+// 相等、或以 '.evil.com' 结尾（子域名）才算命中，'notevil.com' 不误伤。
 export function matchesBlacklist(fromAddr, patterns) {
   const from = String(fromAddr || '').toLowerCase();
   if (!from) return false;
   const dom = domOf(from);
   for (const p of patterns || []) {
     if (p.startsWith('@')) {
-      if (dom && (dom === p.slice(1) || dom.endsWith(p))) return true;
+      const suffix = p.slice(1);
+      if (dom && suffix && (dom === suffix || dom.endsWith(`.${suffix}`))) return true;
     } else if (from === p) {
       return true;
     }
