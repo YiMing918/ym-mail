@@ -18,14 +18,16 @@ jobs:
         with:
           node-version: '22'
       - name: Install deps
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
       - name: Prepare wrangler.toml
         env:
           D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
         run: |
+          if [ -z "$D1_DATABASE_ID" ]; then echo "::error::未配置 D1_DATABASE_ID（仓库 Secrets），终止部署：先配好再部署"; exit 1; fi
           cp wrangler.toml.example wrangler.toml
-          sed -i "s/00000000-0000-0000-0000-000000000000/$D1_DATABASE_ID/" wrangler.toml
-          grep -q "$D1_DATABASE_ID" wrangler.toml
+          ESC=$(printf '%s' "$D1_DATABASE_ID" | sed -e 's/[\&|]/\\&/g')
+          sed -i "s|00000000-0000-0000-0000-000000000000|$ESC|" wrangler.toml
+          grep -qF "$D1_DATABASE_ID" wrangler.toml
       - name: Deploy (retry x3)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -33,7 +35,7 @@ jobs:
         run: |
           ok=0
           for i in 1 2 3; do
-            if npx -y wrangler@4 deploy; then ok=1; break; fi
+            if npx -y wrangler deploy; then ok=1; break; fi
             echo "deploy attempt $i failed, retrying..."
             sleep 20
           done
@@ -43,10 +45,10 @@ jobs:
           SITE_URL: ${{ vars.SITE_URL }}
         run: |
           if [ -z "$SITE_URL" ]; then
-            echo "未配置仓库变量 SITE_URL，跳过部署后自检：部署本身已经完成，只是没有自动验活；请自己打开你的邮箱站确认能正常打开（配置方法见 README 方式一）。"
+            echo "未配置仓库变量 SITE_URL，跳过部署后自检：部署本身已经完成，只是没有自动验证；请自己打开你的邮箱前端确认能正常打开（配置方法见 README 方式一）。"
             exit 0
           fi
           sleep 10
-          code=$(curl -s -o /dev/null -w '%{http_code}' -A 'Mozilla/5.0' "${SITE_URL%/}/api/bootstrap")
+          code=$(curl -s -o /dev/null -w '%{http_code}' -A 'Mozilla/5.0' "${SITE_URL}/api/bootstrap")
           echo "bootstrap http: $code"
           test "$code" = "200"
