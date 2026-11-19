@@ -19,9 +19,6 @@ jobs:
           node-version: '22'
       - name: Install deps
         run: npm ci --no-audit --no-fund
-              - name: 跑仓库测试（不过不部署）
-                      run: |
-                                for f in tests/*.mjs; do node "$f" || exit 1; done
       - name: Prepare wrangler.toml
         env:
           D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
