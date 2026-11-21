@@ -239,12 +239,37 @@ async function createOrClaim(env, cfg, user, addrRaw, kind) {
     // 两边专属额度都被扣）。改成单条条件 UPDATE 抢占：只有 owner_id 仍为 NULL 才
     // 抢得到，按 meta.changes 判成败。顺序也调了：先抢占 → 再扣专属额度 → 最后才
     // 迁移历史邮件；抢败零副作用（不扣额度、不迁邮件），扣额度失败则把地址放回。
+    // 第三轮审计 A1 补漏：旧条件只防「两个人抢同一个地址」，同一人并发认领
+    // 两个不同地址时，两边都读到「没满」一起过门、顶破个数上限（新建分支的
+    // 原子 INSERT 防得住，认领没跟上）。不用专属额度且有政策上限时，把计数
+    // 条件一并写进 UPDATE 的 WHERE（口径与新建的原子 INSERT 完全一致：本人
+    // 该域名该类地址数 + tombstone < 上限），数据库一步判一步抢；用专属额度
+    // 时扣减本身就是闸（抢占后扣、扣不到放回），不加这条。
+    const quotaCond = !user.is_owner && !useBonus && limit > 0;
     const claim = await env.DB.prepare(
-      'UPDATE addresses SET owner_id = ?, kind = ?, bonus_used = ? WHERE address = ? AND owner_id IS NULL'
+      'UPDATE addresses SET owner_id = ?, kind = ?, bonus_used = ? WHERE address = ? AND owner_id IS NULL' +
+        (quotaCond
+          ? ` AND (SELECT COUNT(*) FROM addresses WHERE owner_id = ? AND domain = ? AND kind = ?)
+              + (SELECT COALESCE(SUM(count), 0) FROM tombstones WHERE owner_key = ? AND domain = ? AND kind = ?) < ?`
+          : '')
     )
-      .bind(user.id, kind, useBonus, addr)
+      .bind(
+        ...(quotaCond
+          ? [user.id, kind, useBonus, addr, user.id, domain, kind, `u:${user.id}`, domain, kind, limit]
+          : [user.id, kind, useBonus, addr])
+      )
       .run();
-    if (!claim.meta || claim.meta.changes === 0) return { error: [403, '这个地址已被别人认领了'] };
+    if (!claim.meta || claim.meta.changes === 0) {
+      if (quotaCond) {
+        // 抢空有两种原因：地址被人抢走，或并发把最后一个名额占了。地址
+        // 还在公开池里没人领 → 是后者，回上限文案（与新建分支一致）。
+        const still = await env.DB.prepare('SELECT owner_id FROM addresses WHERE address = ?').bind(addr).first();
+        if (still && still.owner_id === null) {
+          return { error: [403, `你在 ${domain} 的${kind === 'custom' ? '自定义前缀' : '随机地址'}已达上限 ${limit} 个（后台政策）；邀请好友注册成功可得专属额度，超出上限也能建`] };
+        }
+      }
+      return { error: [403, '这个地址已被别人认领了'] };
+    }
     const releaseClaim = () =>
       env.DB.prepare('UPDATE addresses SET owner_id = NULL, bonus_used = 0 WHERE address = ? AND owner_id = ?')
         .bind(addr, user.id)
@@ -592,10 +617,27 @@ export async function handleApi(request, env, url) {
       if (pol.g_custom > 0 && usedC >= pol.g_custom) return err(403, `游客在 ${domain} 的自定义前缀已达上限 ${pol.g_custom} 个`);
       if (await gOver()) return gLimitErr();
       try {
-        await db
-          .prepare('INSERT INTO addresses (address, domain, prefix, kind, owner_id, protected, created_at, last_mail_at) VALUES (?, ?, ?, ?, NULL, 0, ?, 0)')
-          .bind(addr, domain, wantPrefix, 'custom', Date.now())
-          .run();
+        // 第三轮审计 A3：上限改原子判——旧写法先读用量再普通 INSERT，不同
+        // 前缀的并发请求会一起过门、把游客池顶超 g_custom。改成与注册用户
+        // 新建同范式：INSERT…SELECT…WHERE 把池子计数（公开池该域名该类
+        // 地址数 + guest tombstone）写进插入条件，changes=0 就是池满。
+        if (pol.g_custom > 0) {
+          const ins = await db
+            .prepare(
+              `INSERT INTO addresses (address, domain, prefix, kind, owner_id, protected, created_at, last_mail_at)
+               SELECT ?, ?, ?, 'custom', NULL, 0, ?, 0
+               WHERE (SELECT COUNT(*) FROM addresses WHERE owner_id IS NULL AND domain = ? AND kind = 'custom')
+                   + (SELECT COALESCE(SUM(count), 0) FROM tombstones WHERE owner_key = 'guest' AND domain = ? AND kind = 'custom') < ?`
+            )
+            .bind(addr, domain, wantPrefix, Date.now(), domain, domain, pol.g_custom)
+            .run();
+          if (!ins.meta || ins.meta.changes === 0) return err(403, `游客在 ${domain} 的自定义前缀已达上限 ${pol.g_custom} 个`);
+        } else {
+          await db
+            .prepare('INSERT INTO addresses (address, domain, prefix, kind, owner_id, protected, created_at, last_mail_at) VALUES (?, ?, ?, ?, NULL, 0, ?, 0)')
+            .bind(addr, domain, wantPrefix, 'custom', Date.now())
+            .run();
+        }
       } catch {
         return err(400, '这个地址刚刚被人抢先建了，换个前缀吧');
       }
@@ -614,10 +656,26 @@ export async function handleApi(request, env, url) {
         const addr = `${prefix}@${pol.domain}`;
         if (cfg.banned.has(addr)) continue;
         try {
-          await db
-            .prepare('INSERT INTO addresses (address, domain, prefix, kind, owner_id, protected, created_at, last_mail_at) VALUES (?, ?, ?, ?, NULL, 0, ?, 0)')
-            .bind(addr, pol.domain, prefix, 'random', Date.now())
-            .run();
+          // 第三轮审计 A3：同自定义前缀，上限改原子判（计数口径一致，
+          // kind 换 random）；changes=0 = 这个域名的池刚被并发占满，
+          // 不必再换名重试，直接换下一个域名试。
+          if (pol.g_random > 0) {
+            const ins = await db
+              .prepare(
+                `INSERT INTO addresses (address, domain, prefix, kind, owner_id, protected, created_at, last_mail_at)
+                 SELECT ?, ?, ?, 'random', NULL, 0, ?, 0
+                 WHERE (SELECT COUNT(*) FROM addresses WHERE owner_id IS NULL AND domain = ? AND kind = 'random')
+                     + (SELECT COALESCE(SUM(count), 0) FROM tombstones WHERE owner_key = 'guest' AND domain = ? AND kind = 'random') < ?`
+              )
+              .bind(addr, pol.domain, prefix, Date.now(), pol.domain, pol.domain, pol.g_random)
+              .run();
+            if (!ins.meta || ins.meta.changes === 0) break;
+          } else {
+            await db
+              .prepare('INSERT INTO addresses (address, domain, prefix, kind, owner_id, protected, created_at, last_mail_at) VALUES (?, ?, ?, ?, NULL, 0, ?, 0)')
+              .bind(addr, pol.domain, prefix, 'random', Date.now())
+              .run();
+          }
           await gBump();
           return json({ ok: true, address: addr });
         } catch {
@@ -637,11 +695,21 @@ export async function handleApi(request, env, url) {
     if (row.protected) return err(400, '主地址不可删');
     const pol = cfg.byDomain[row.domain];
     if (pol && !pol.u_del) return err(403, '站长设置这个域名不能删掉重建');
-    // 删邮箱连同它的邮件和附件一起真删（同一批落库）：不让「站上删了、库里还留着」白占 D1 空间
+    // 删邮箱连同它的邮件和附件一起真删：不让「站上删了、库里还留着」白占 D1 空间
+    // 第三轮审计 A2：返还/占额以地址 DELETE 的实际 changes 为准。旧写法把
+    // 「删地址」和「无条件返还专属额度」塞进同一批落库：两个删除请求并发打
+    // 同一个地址，都先读到 bonus_used、都组装了返还，第二个的 DELETE 删 0
+    // 行也不报错，返还照样执行——额度退两次（不返还时记的 tombstone 同理
+    // 会记两笔）。改成先单独删地址行：真删掉（changes=1）的那一次才做后续
+    // 清理和返还/占额；changes=0 说明并发的那次已处理完，本次直接收工。
+    const delAddr = await db
+      .prepare('DELETE FROM addresses WHERE address = ? AND owner_id = ?')
+      .bind(addr, viewer.user.id)
+      .run();
+    if (!delAddr.meta || delAddr.meta.changes === 0) return json({ ok: true, refund: false });
     const stmts = [
       db.prepare('DELETE FROM attachments WHERE mail_id IN (SELECT id FROM mails WHERE to_addr = ? AND owner_id = ?)').bind(addr, viewer.user.id),
       db.prepare('DELETE FROM mails WHERE to_addr = ? AND owner_id = ?').bind(addr, viewer.user.id),
-      db.prepare('DELETE FROM addresses WHERE address = ?').bind(addr),
     ];
     if (row.bonus_used) {
       // 专属额度建的地址不占政策池（不写 tombstone）；返还开着就把专属额度退回本人
@@ -747,6 +815,7 @@ export async function handleApi(request, env, url) {
     // 用站长码 = 直接注册，只享后台政策额度；用个人码 = 邀请人记名，注册成功后邀请人加专属额度。
     const codeIn = String(body.invite || body.referrer || '').trim().toUpperCase();
     let referrerId = 0;
+    let inviteConsumed = false; // 第三轮审计 B：站长码次数已扣标记，建号失败时靠它补偿返还
     if (!isFirst) {
       if (cfg.regMode === 'email') {
         const code = String(body.code || '').trim();
@@ -783,6 +852,7 @@ export async function handleApi(request, env, url) {
               .bind(codeIn)
               .run();
             if (!upd.meta || upd.meta.changes === 0) return regFail(400, '邀请码刚被用完，找站长再要一个');
+            inviteConsumed = true;
           }
         } else {
           const inviter = await db.prepare('SELECT id FROM users WHERE invite_code = ?').bind(codeIn).first();
@@ -792,6 +862,19 @@ export async function handleApi(request, env, url) {
       }
     }
 
+    // 第三轮审计 B：站长码次数在建号之前就已扣掉，下面用户 INSERT 若失败
+    // （并发抢注撞唯一约束、D1 瞬时错误），不补偿就白烧一次。两个 INSERT
+    // 失败出口先走 refundInvite 把次数加回去；它只认 inviteConsumed 标记、
+    // 还过即清，注册成功路径不经过那两个出口，不会重复返还。
+    const refundInvite = async () => {
+      if (!inviteConsumed) return;
+      inviteConsumed = false;
+      await db
+        .prepare('UPDATE invites SET left_uses = left_uses + 1 WHERE code = ?')
+        .bind(codeIn)
+        .run()
+        .catch(() => {});
+    };
     const isOwner = isFirst ? 1 : 0;
     const pwHash = await hashPassword(password);
     // 首账号原子化（2026-11-17 审计核验 #2）：isFirst 是「先查 COUNT 再 INSERT」，
@@ -831,9 +914,11 @@ export async function handleApi(request, env, url) {
         try {
           ins = await doInsert(false);
         } catch {
+          await refundInvite();
           return regFail(400, '这个账号名或邮箱刚被别人抢先注册了，换一个吧');
         }
       } else {
+        await refundInvite();
         return regFail(400, '这个账号名或邮箱刚被别人抢先注册了，换一个吧');
       }
     }
