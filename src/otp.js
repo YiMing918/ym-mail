@@ -33,11 +33,15 @@ function alnumRuns(text) {
 function looksLikeNoise(text, { token, start, end }, { anchored = false } = {}) {
   const before = text.slice(Math.max(0, start - 3), start);
   const after = text.slice(end, end + 3);
+  // 后缀判断先去掉空白：「654321 元」这种数字与单位之间带空格的写法，
+  // 不去空白会让 ^ 元 / ^ 年 的锚定全部落空、金额被当成验证码误报
+  //（2026-11-23 全量审计复现：「退款 654321 元到账通知」误提 654321）。
+  const afterT = after.trimStart();
   // 金额：前面带货币符号，或后面跟「元/块」
-  if (/[¥￥$€£]$/.test(before.trimEnd()) || /^(元|块|圆)/.test(after)) return true;
+  if (/[¥￥$€£]$/.test(before.trimEnd()) || /^(元|块|圆)/.test(afterT)) return true;
   if (/(金额|总计|合计|支付|price|amount|total)[:：]?\s*$/i.test(before)) return true;
   // 日期：后面跟 年/月/日，或前面是 年/月
-  if (/^[年月日]/.test(after) || /[年月]$/.test(before.trimEnd())) return true;
+  if (/^[年月日]/.test(afterT) || /[年月]$/.test(before.trimEnd())) return true;
   // 4 位数字落在 1900-2099 多半是年份；有关键词锚定时放行（如 4 位 PIN 紧跟「验证码」）
   if (!anchored && token.length === 4) {
     const n = Number(token);
