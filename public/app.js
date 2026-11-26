@@ -86,7 +86,7 @@ function renderModeBar(){
   if(mode()==='guest'){
     $('modeBar').className = 'modebar';
     $('modeBar').innerHTML = st.guest_mode
-      ? '👋 <b>游客模式</b>：不用注册就能收信，邮箱是临时的（邮件保留 '+st.guest_days+' 天）。注册后邮箱长期是你的、还能发信。'
+      ? '👋 <b>游客模式</b>：不用注册就能收信，邮箱是临时的（邮件保留 '+st.guest_days+' 天）。⚠️ <b>游客邮箱是公开的：谁知道地址，谁就能看到里面的信和验证码</b>——别拿它收重要的码；要私密就注册并认领地址，认领后只有你能看。'
       : '🔒 <b>游客模式已关闭</b>：站长设置必须登录后才能用。点右上角「登录 / 注册」。';
   } else {
     $('modeBar').className = 'modebar ok';
