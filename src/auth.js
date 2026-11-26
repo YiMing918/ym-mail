@@ -48,7 +48,10 @@ export async function verifyPassword(password, stored) {
   try {
     const parts = String(stored || '').split('$');
     if (parts.length !== 4 || parts[0] !== 'pbkdf2') return false;
-    const iterations = Number(parts[1]);
+    // 迭代次数钳制（与 ym-dash 的 clampIter 同款）：存储值被改坏或篡改
+    // 成天文数字时，一次登录就能把计算拖死（DoS）。存量哈希都由本
+    // 代码以 PBKDF2_ITERATIONS 生成，超出 [10000, 200000] 的只可能是坏数据。
+    const iterations = Math.min(200000, Math.max(10000, Number(parts[1]) || PBKDF2_ITERATIONS));
     const salt = b64ToBytes(parts[2]);
     const expected = b64ToBytes(parts[3]);
     const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
