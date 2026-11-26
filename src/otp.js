@@ -42,6 +42,10 @@ function looksLikeNoise(text, { token, start, end }, { anchored = false } = {}) 
   if (/(金额|总计|合计|支付|price|amount|total)[:：]?\s*$/i.test(before)) return true;
   // 日期：后面跟 年/月/日，或前面是 年/月
   if (/^[年月日]/.test(afterT) || /[年月]$/.test(before.trimEnd())) return true;
+  // 单号类：紧跟在「…号」「订单」后面的串是单号/编号/尾号，不是验证码
+  //（「订单 A1B2C3」「订单号 20261126」都会被锚定/兜底误捞）。看前 6 字。
+  const before6 = text.slice(Math.max(0, start - 6), start).trimEnd();
+  if (/(号|订单)$/.test(before6)) return true;
   // 4 位数字落在 1900-2099 多半是年份；有关键词锚定时放行（如 4 位 PIN 紧跟「验证码」）
   if (!anchored && token.length === 4) {
     const n = Number(token);
@@ -59,16 +63,22 @@ export function extractOtp(text) {
 
   // 第一步：关键词锚定。在每个关键词后面 32 个字符的窗口里找候选，
   // 数字优先，其次字母数字混合令牌。
+  // 注意：不能先把窗口切成子串再找——切口是人为的，digitRuns 的边界
+  // 断言 (?!\d) 会在切口处误判「数字到此结束」，验证码正好跨过窗口
+  // 边界时就会返回截断的半个码。改成在全文里找候选、只按候选的绝对
+  // 起点是否落在窗口内来过滤，候选本体始终完整。
   KEYWORD_RE.lastIndex = 0;
   let km;
   while ((km = KEYWORD_RE.exec(src)) !== null) {
     const winStart = km.index + km[0].length;
-    const win = src.slice(winStart, winStart + 32);
-    for (const cand of digitRuns(win)) {
-      if (!looksLikeNoise(win, cand, { anchored: true })) return cand.token;
+    const winEnd = winStart + 32;
+    for (const cand of digitRuns(src)) {
+      if (cand.start < winStart || cand.start >= winEnd) continue;
+      if (!looksLikeNoise(src, cand, { anchored: true })) return cand.token;
     }
-    for (const cand of alnumRuns(win)) {
-      return cand.token;
+    for (const cand of alnumRuns(src)) {
+      if (cand.start < winStart || cand.start >= winEnd) continue;
+      if (!looksLikeNoise(src, cand, { anchored: true })) return cand.token;
     }
   }
 
