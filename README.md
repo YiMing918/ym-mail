@@ -1,6 +1,6 @@
 # 佲的邮箱 YM Mail
 
-[![版本](https://img.shields.io/badge/版本-v1.0.14-blue)](https://github.com/YiMing918/ym-mail/releases/latest)
+[![版本](https://img.shields.io/badge/版本-v1.0.16-blue)](https://github.com/YiMing918/ym-mail/releases/latest)
 [![Cloudflare](https://img.shields.io/badge/Cloudflare-Workers%20%2F%20D1%20%2F%20Email%20Routing-F38020)](https://developers.cloudflare.com/workers/)
 [![发信](https://img.shields.io/badge/发信-Resend-000000)](https://resend.com/)
 
