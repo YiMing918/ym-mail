@@ -6,8 +6,10 @@
 /* ── 基础 ── */
 function $(id){ return document.getElementById(id); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
-function toast(msg){ var el=$('toast'); el.textContent=msg; el.classList.add('show'); setTimeout(function(){ el.classList.remove('show'); },2400); }
+var toastTimer = null;
+function toast(msg){ var el=$('toast'); el.textContent=msg; el.classList.add('show'); if(toastTimer) clearTimeout(toastTimer); toastTimer=setTimeout(function(){ el.classList.remove('show'); },2400); }
 function copy(t){ if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(t).then(function(){toast('已复制：'+t);},function(){toast(t);}); } else toast(t); }
+var claimBusy = false; // 游客领地址在飞守卫（换一个/加号共用）
 var COLORS = ['#e8590c','#1971c2','#2f9e44','#9c36b5','#e64980','#0c8599','#f08c00','#5f3dc4'];
 function colorOf(name){ var s=0; for(var i=0;i<name.length;i++) s+=name.charCodeAt(i); return COLORS[s%COLORS.length]; }
 function initialOf(name){ var s = String(name == null ? '' : name); if(!s) return '?'; return /[一-龥]/.test(s[0]) ? s[0] : s[0].toUpperCase(); }
@@ -591,6 +593,7 @@ $('sheetAdd').addEventListener('click', async function(){
   $('sheetWrap').classList.remove('show');
   if(mode()==='guest' && !(S.settings.guest_mode)){ toast('游客模式已关闭，请先登录'); show('authView'); return; }
   if(mode()==='guest'){
+    if(claimBusy) return; claimBusy = true;
     try {
       var r = await api('/api/guest/address', { method:'POST', body:{} });
       curAddr = r.address; cardAddr = r.address; cardTemp = false; scopePicked = false;
@@ -598,6 +601,7 @@ $('sheetAdd').addEventListener('click', async function(){
       await softRefresh();
       toast('新的临时邮箱：'+r.address);
     } catch(e){ toast(e.message); }
+    finally { claimBusy = false; }
     return;
   }
   document.querySelector('#tabbar button[data-page="pageSettings"]').click();
@@ -608,6 +612,7 @@ $('genBtn').addEventListener('click', async function(){
   if(mode()==='guest'){
     // 游客「换一个」= 去服务器真领一个新随机地址，并让列表立刻跟过去看它：
     // 以前是前端自己编一个没建过的地址，刷新就丢、信到了也对不上号。
+    if(claimBusy) return; claimBusy = true;
     try {
       var r = await api('/api/guest/address', { method:'POST', body:{} });
       curAddr = r.address; cardAddr = r.address; cardTemp = false; scopePicked = false;
@@ -615,6 +620,7 @@ $('genBtn').addEventListener('click', async function(){
       await softRefresh();
       toast('新的临时邮箱：'+r.address);
     } catch(e){ toast(e.message); }
+    finally { claimBusy = false; }
     return;
   }
   var dom;
