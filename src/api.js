@@ -452,7 +452,10 @@ export async function handleApi(request, env, url) {
     const gb = guestBlocked();
     if (gb) return gb;
     const body = (await readJson(request)) || {};
-    const vis = visFrag(viewer);
+    // 必须用 visSql（无别名版）：visFrag 的片段带 m. 前缀、只配 FROM mails m
+    // 的查询；这条 UPDATE 没有别名，混用会让 D1 报「no such column: m.owner_id」
+    // ——全部已读自上线起一直 500（2026-11-27 逐按钮实测发现，回归测试 tests/read-all.mjs）。
+    const vis = visSql(viewer);
     const binds = [...vis.binds];
     let sql = `UPDATE mails SET is_read = 1 WHERE ${vis.sql} AND folder = 'inbox' AND is_read = 0`;
     if (body.scope && body.scope !== 'all') {
